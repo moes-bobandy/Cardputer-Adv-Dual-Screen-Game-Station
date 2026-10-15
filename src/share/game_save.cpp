@@ -11,6 +11,7 @@ namespace
 {
     // Indicates if a game save operation is in progress
     std::atomic<bool> g_gameIsSaving{false};
+    share::GameSaveQuitFlushFn g_quitFlushFn = nullptr;
 
     // CRC32 table
     static uint32_t* s_crc32_tbl = nullptr;  // 256 * 4
@@ -185,6 +186,18 @@ namespace share
         }
 
         return crc ^ 0xFFFFFFFFu;
+    }
+
+    void gameSaveSetQuitFlush(GameSaveQuitFlushFn fn)
+    {
+        g_quitFlushFn = fn;
+    }
+
+    void gameSaveFlushForQuit()
+    {
+        if (g_quitFlushFn) {
+            g_quitFlushFn();
+        }
     }
 
 } // namespace share

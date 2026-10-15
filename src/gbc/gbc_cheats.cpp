@@ -432,6 +432,17 @@ void gbc_cheats_run_menu(void) {
 
   auto build_options = [&](std::vector<std::string>& opts) {
     opts.clear();
+    char row[64];
+    snprintf(row, sizeof(row), "Scale: %s", gbc_scale_name());
+    opts.push_back(row);
+    snprintf(row, sizeof(row), "Blend: %s", gbc_frame_blend ? "On" : "Off");
+    opts.push_back(row);
+    snprintf(row, sizeof(row), "GBC color: %s", gbc_colour_correct ? "On" : "Off");
+    opts.push_back(row);
+    snprintf(row, sizeof(row), "DMG pal: %s", gbc_dmg_palette_name());
+    opts.push_back(row);
+    snprintf(row, sizeof(row), "Night: %s", gbc_display_night_mode() ? "On" : "Off");
+    opts.push_back(row);
     opts.push_back("Enable all");
     opts.push_back("Disable all");
     opts.push_back("Reload from SD");
@@ -471,19 +482,34 @@ void gbc_cheats_run_menu(void) {
   }
 
   VerticalSelector selector(display, input);
+  int selIndex = 0;  // preserve highlight across toggle/redraw
   while (true) {
     std::vector<std::string> options;
     build_options(options);
-    int choice = selector.select("Cheats", options, true, false, {}, {}, false, false);
+    int choice = selector.select("Cheats", options, true, false, {}, {}, false, false, selIndex);
     if (choice < 0) break; // ESC / left = back
+    selIndex = choice;  // stay on same row after enable/disable/reload
 
-    const int idxEnableAll  = 0;
-    const int idxDisableAll = 1;
-    const int idxReload     = 2;
-    const int idxFirstCheat = 3;
+    const int idxScale      = 0;
+    const int idxBlend      = 1;
+    const int idxColour     = 2;
+    const int idxPalette    = 3;
+    const int idxNight      = 4;
+    const int idxEnableAll  = 5;
+    const int idxDisableAll = 6;
+    const int idxReload     = 7;
+    const int idxFirstCheat = 8;
     const int idxBack       = idxFirstCheat + s_count;
 
     if (choice == idxBack) break;
+    if (choice == idxScale) { gbc_toggle_scale_mode(); continue; }
+    if (choice == idxBlend) { gbc_toggle_frame_blend(); continue; }
+    if (choice == idxColour) { gbc_toggle_colour_correct(); continue; }
+    if (choice == idxPalette) { gbc_cycle_dmg_palette(); continue; }
+    if (choice == idxNight) {
+      gbc_display_toggle_night_mode();
+      continue;
+    }
     if (choice == idxEnableAll) {
       gbc_cheats_enable_all(true);
       continue;

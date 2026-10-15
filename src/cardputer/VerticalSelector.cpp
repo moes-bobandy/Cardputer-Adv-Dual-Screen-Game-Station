@@ -16,9 +16,15 @@ int VerticalSelector::select(
         const std::vector<std::string>& options2,
         const std::vector<std::string>& shortcuts, 
         bool visibleMention,
-        bool handleInactivity) 
+        bool handleInactivity,
+        int initialIndex) 
 {
     int currentIndex = 0, lastIndex = -1, lastQuerySize = 0;
+    if (!options.empty()) {
+        if (initialIndex < 0) initialIndex = 0;
+        if (initialIndex >= (int)options.size()) initialIndex = (int)options.size() - 1;
+        currentIndex = initialIndex;
+    }
     char key = KEY_NONE;
     std::string searchQuery;
     std::vector<std::string> filteredOptions = options;

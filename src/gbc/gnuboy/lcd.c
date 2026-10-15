@@ -8,6 +8,10 @@
 #include "cpu.h"
 #include "tables.h"
 
+/* Filled by gbc_cc_lut.c. Index is the raw GBC RGB555 colour. */
+extern const uint16_t gbc_cc_lut[32768];
+extern volatile int gbc_colour_correct;
+
 typedef struct
 {
 	short v, x, pat, pal, pri;
@@ -581,19 +585,35 @@ static inline void sync_palette(void)
 		}
 	}
 
-	for (int i = 0; i < 64; ++i)
+	if (gbc_colour_correct && IS_CGB)
 	{
-		int c = colors[i];        // Int is fine, we won't run in sign issues
-		int r = c & 0x1f;         // bit 0-4 red
-		int g = (c >> 5) & 0x1f;  // bit 5-9 green
-		int b = (c >> 10) & 0x1f; // bit 10-14 blue
+		for (int i = 0; i < 64; ++i)
+		{
+			int c = colors[i];
+			int out = gbc_cc_lut[c & 0x7FFF];
 
-		int out = (r << 11) | (g << 6) | (b);
+			if (host.video.format == GB_PIXEL_565_BE)
+				host.video.palette[i] = (out << 8) | (out >> 8);
+			else
+				host.video.palette[i] = out;
+		}
+	}
+	else
+	{
+		for (int i = 0; i < 64; ++i)
+		{
+			int c = colors[i];        // Int is fine, we won't run in sign issues
+			int r = c & 0x1f;         // bit 0-4 red
+			int g = (c >> 5) & 0x1f;  // bit 5-9 green
+			int b = (c >> 10) & 0x1f; // bit 10-14 blue
 
-		if (host.video.format == GB_PIXEL_565_BE)
-			host.video.palette[i] = (out << 8) | (out >> 8);
-		else
-			host.video.palette[i] = out;
+			int out = (r << 11) | (g << 6) | (b);
+
+			if (host.video.format == GB_PIXEL_565_BE)
+				host.video.palette[i] = (out << 8) | (out >> 8);
+			else
+				host.video.palette[i] = out;
+		}
 	}
 
 	pal_dirty = false;

@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include "share/input.h"
 #include "gbc_cheats.h"
+#include "gbc_display.h"
+#include "gbc_settings.h"
 
 extern "C" {
   #include "gnuboy/gnuboy.h"
@@ -12,6 +14,9 @@ extern "C" {
 extern bool gbcFullScreen;
 extern int  gbcZoomPercent;
 extern int  gbPalette;
+extern int  gbcDmgPalette;
+
+static bool s_zoomDirty = false;
 
 extern "C" int gbc_input_poll(void)
 {   
@@ -55,16 +60,19 @@ extern "C" int gbc_input_poll(void)
                     gbcFullScreen  = false;
                 }
             }
+            gbc_settings_save();
         } else {
             //
             // palette toggle (used by GB only)
             //
             gbPalette++;
-            if (gbPalette > 36) {
+            if (gbPalette >= GB_PALETTE_COUNT) {
                 gbPalette = 0;
             }
+            gbcDmgPalette = gbPalette;
 
             gnuboy_set_palette((gb_palette_t)gbPalette);
+            gbc_settings_save();
             EMU_LOG("[GBC] Palette -> %d\n", gbPalette);
         }
 
@@ -97,6 +105,46 @@ extern "C" int gbc_input_poll(void)
             return dummy_ret;
         }
         wasDown = cDown;
+    }
+
+
+    // ================== NIGHT MODE (orange warm filter) ==================
+    // Own rising-edge: Keyboard.isChange() is already consumed by screen toggle
+    // above in the same poll (same pitfall as cheat hotkey 'c').
+    {
+        static bool wasNightDown = false;
+        bool nDown = M5Cardputer.Keyboard.isKeyPressed(CARDPUTER_NIGHT_TOGGLE) ||
+                     M5Cardputer.Keyboard.isKeyPressed('N');
+        if (!nDown) {
+            for (char ch : ks.word) {
+                if (ch == CARDPUTER_NIGHT_TOGGLE || ch == 'N') { nDown = true; break; }
+            }
+        }
+        if (nDown && !wasNightDown) {
+            gbc_display_toggle_night_mode();
+            EMU_LOG("[GBC] Night mode -> %s\n",
+                    gbc_display_night_mode() ? "ON" : "OFF");
+            wasNightDown = true;
+            return dummy_ret;
+        }
+        wasNightDown = nDown;
+    }
+
+    // Blend and GBC colour. Night stays on its own edge above.
+    {
+        static bool blendWas = false;
+        static bool ccWas = false;
+        bool blendDown = M5Cardputer.Keyboard.isKeyPressed('b') ||
+                         M5Cardputer.Keyboard.isKeyPressed('B');
+        bool ccDown = M5Cardputer.Keyboard.isKeyPressed('g') ||
+                      M5Cardputer.Keyboard.isKeyPressed('G');
+        bool blendEdge = blendDown && !blendWas;
+        bool ccEdge = ccDown && !ccWas;
+        blendWas = blendDown;
+        ccWas = ccDown;
+        if (blendEdge) gbc_toggle_frame_blend();
+        if (ccEdge) gbc_toggle_colour_correct();
+        if (blendEdge || ccEdge) return dummy_ret;
     }
 
     // ================== DIRECTIONS ==================
@@ -151,12 +199,18 @@ extern "C" int gbc_input_poll(void)
     if (ks.fn && M5Cardputer.Keyboard.isKeyPressed(CARDPUTER_ZOOM_PLUS)) {
         if (!gbcFullScreen) gbcFullScreen = true;
         gbcZoomPercent = (gbcZoomPercent < 150) ? (gbcZoomPercent + 1) : 150;
+        s_zoomDirty = true;
         return dummy_ret;
     }
     if (ks.fn && M5Cardputer.Keyboard.isKeyPressed(CARDPUTER_ZOOM_MINUS)) {
         if (!gbcFullScreen) gbcFullScreen = true;
         gbcZoomPercent = (gbcZoomPercent > 100) ? (gbcZoomPercent - 1) : 100;
+        s_zoomDirty = true;
         return dummy_ret;
+    }
+    if (s_zoomDirty) {
+        s_zoomDirty = false;
+        gbc_settings_save();
     }
 
     return pad;

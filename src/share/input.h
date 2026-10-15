@@ -26,6 +26,8 @@
 
 #define CARDPUTER_CHEATS         'c'   // GameShark cheat menu
 
+#define CARDPUTER_NIGHT_TOGGLE   'n'   // Orange night-mode warm filter
+
 #define CARDPUTER_ZOOM_PLUS    '/' // FN + arrow right
 #define CARDPUTER_ZOOM_MINUS   ',' // FN + arrow left
 
