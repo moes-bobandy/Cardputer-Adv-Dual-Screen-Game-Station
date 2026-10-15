@@ -441,12 +441,13 @@ void gbc_cheats_run_menu(void) {
     opts.push_back(row);
     snprintf(row, sizeof(row), "DMG pal: %s", gbc_dmg_palette_name());
     opts.push_back(row);
-    snprintf(row, sizeof(row), "Night: %s", gbc_night ? "On" : "Off");
+    snprintf(row, sizeof(row), "Night: %s", gbc_display_night_mode() ? "On" : "Off");
     opts.push_back(row);
     opts.push_back("Enable all");
     opts.push_back("Disable all");
     opts.push_back("Reload from SD");
     for (int i = 0; i < s_count; ++i) {
+      char row[64];
       snprintf(row, sizeof(row), "%s %s",
                s_cheats[i].enabled ? "[ON]" : "[OFF]",
                s_cheats[i].name);
@@ -458,14 +459,36 @@ void gbc_cheats_run_menu(void) {
   if (s_count == 0) {
     display.topBar("Cheats", true, false);
     display.subMessage("No cheats loaded", 800);
+    std::vector<std::string> emptyOpts = {
+      "Reload from SD",
+      "Back"
+    };
+    VerticalSelector sel(display, input);
+    int choice = sel.select("Cheats", emptyOpts, true, false, {}, {}, false, false);
+    if (choice == 0) {
+      // Reload needs SPI-safe SD
+      gbc_cheats_load();
+      // gbc_cheats_load clears setGameIsSaving — re-assert pause for UI
+      share::setGameIsSaving(true);
+      gbc_display_wait_idle();
+      display.setExternalDisplay(&externalDisplay);
+    }
+    if (s_count == 0) {
+      display.topBar("Cheats", true, false);
+      display.subMessage("Still empty — check SD", 1200);
+      share::setGameIsSaving(false);
+      return;
+    }
   }
 
   VerticalSelector selector(display, input);
+  int selIndex = 0;  // preserve highlight across toggle/redraw
   while (true) {
     std::vector<std::string> options;
     build_options(options);
-    int choice = selector.select("Cheats", options, true, false, {}, {}, false, false);
+    int choice = selector.select("Cheats", options, true, false, {}, {}, false, false, selIndex);
     if (choice < 0) break; // ESC / left = back
+    selIndex = choice;  // stay on same row after enable/disable/reload
 
     const int idxScale      = 0;
     const int idxBlend      = 1;
@@ -483,7 +506,10 @@ void gbc_cheats_run_menu(void) {
     if (choice == idxBlend) { gbc_toggle_frame_blend(); continue; }
     if (choice == idxColour) { gbc_toggle_colour_correct(); continue; }
     if (choice == idxPalette) { gbc_cycle_dmg_palette(); continue; }
-    if (choice == idxNight) { gbc_toggle_night(); continue; }
+    if (choice == idxNight) {
+      gbc_display_toggle_night_mode();
+      continue;
+    }
     if (choice == idxEnableAll) {
       gbc_cheats_enable_all(true);
       continue;

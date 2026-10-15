@@ -1,0 +1,17 @@
+cheats = 4
+
+cheat0_desc = "All Coins"
+cheat0_code = "01FF9FD5+01FFA0D5+01FFA1D5+010FA2D5"
+cheat0_enable = true
+
+cheat1_desc = "No Energy Card limit per turn"
+cheat1_code = "010004CC"
+cheat1_enable = true
+
+cheat2_desc = "Challenge Machine wins (set XX=count, default 99)"
+cheat2_code = "916311DE"
+cheat2_enable = false
+
+cheat3_desc = "GR Challenge Machine wins (set XX=count, default 99)"
+cheat3_code = "916313DE"
+cheat3_enable = false

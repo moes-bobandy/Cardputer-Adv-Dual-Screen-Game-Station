@@ -28,17 +28,31 @@ static void bresenham(uint16_t* map, int d, int s) {
   }
 }
 
+// v15 warm filter, copied exactly.
+static inline uint16_t warm565(uint16_t c) {
+  uint16_t r = (c >> 11) & 0x1F;
+  uint16_t g = (c >> 5) & 0x3F;
+  uint16_t b = c & 0x1F;
+  uint16_t r2 = r + (r >> 3);
+  if (r2 > 31) r2 = 31;
+  uint16_t g2 = (uint16_t)((g * 55) / 64);
+  uint16_t b2 = (uint16_t)((b * 40) / 64);
+  return (uint16_t)((r2 << 11) | (g2 << 5) | b2);
+}
+
 static void gather_map(int dstW, int dstH) {
   for (int y = 0; y < dstH; ++y) {
     const uint16_t* sl = src + (int)ymap[y] * SRC_W;
     uint16_t* dl = dst + y * dstW;
-    for (int x = 0; x < dstW; ++x) dl[x] = sl[xmap[x]];
+    for (int x = 0; x < dstW; ++x) dl[x] = warm565(sl[xmap[x]]);
   }
 }
 
 static void gather_integer() {
   for (int y = 0; y < SRC_H; ++y) {
-    memcpy(dst + y * SRC_W, src + y * SRC_W, SRC_W * sizeof(uint16_t));
+    const uint16_t* sl = src + y * SRC_W;
+    uint16_t* dl = dst + y * SRC_W;
+    for (int x = 0; x < SRC_W; ++x) dl[x] = warm565(sl[x]);
   }
 }
 
@@ -149,9 +163,9 @@ int main() {
   printf("pixels old fullscreen NN: %d\n", fw * fh);
   printf("pixels integer default:   %d\n", SRC_W * SRC_H);
   printf("pixels fill NN:           %d\n", fw * fh);
-  printf("gather old NN:    %.4f ms/frame\n", t_old / N);
-  printf("gather integer:   %.4f ms/frame\n", t_int / N);
-  printf("gather fill NN:   %.4f ms/frame\n", t_fit / N);
+  printf("gather v15 warm NN:     %.4f ms/frame\n", t_old / N);
+  printf("gather integer+warm:    %.4f ms/frame\n", t_int / N);
+  printf("gather fill+warm:       %.4f ms/frame\n", t_fit / N);
   printf("blend (off path is 0): %.4f ms/frame when on\n", t_blend / N);
   printf("palette plain: %.4f us/sync\n", (t_pal_off / P) * 1000.0);
   printf("palette lut:   %.4f us/sync\n", (t_pal_on / P) * 1000.0);

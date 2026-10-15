@@ -1,0 +1,262 @@
+# Polished Crystal v3.2.3 GameShark .cht for Game Station dual-screen
+# Built from polishedcrystal-3.2.3.sym WRAM labels (NOT for 3.1.x / other versions).
+# WARNING: wrong-version codes can corrupt saves. Backup .sav first.
+# Rename this file to EXACTLY match your ROM basename + .cht
+#   e.g. polishedcrystal-3.2.3.gbc  ->  polishedcrystal-3.2.3.cht
+# Path on SD: /gbc_cheats/<rom-basename>.cht
+# Codes load DISABLED; press c in-game, enable only what you need.
+# Each "+" part shows as its own menu row (desc #1, #2, ...): turn ON every
+# row of the cheat you want, and turn them all OFF again afterwards.
+# NEVER use "Enable all" (bag / mart / wild-force codes fight over the same bytes).
+#
+# BAG / ITEM CODES — POCKET-CORRECT (updated 2026-10-06)
+#  PC 3.2.3 bag = separate pockets, each: count byte, then (id,qty) pairs, FF end.
+#    Item Pocket   wNumItems    D827  slot1 id D828 qty D829   (max 75)
+#    Med.Pocket    wNumMedicine D8BF  slot1 id D8C0 qty D8C1   (max 37)
+#    Ball Pocket   wNumBalls    D90B  slot1 id D90C qty D90D   (max 25)
+#    (Berries D93F/D940, PC items D97F/D980, TM/HM = flags D7F5, Key D800)
+#  Pocket is fixed per item (data/items/attributes.asm):
+#    Balls (Poke 01, Ultra 03, Master 04) -> BALL pocket
+#    Potions 19-1C, Full Heal 22, Full Restore 23, Revive 24, Max Revive 25,
+#      Rare Candy 30 -> MEDICINE pocket ("Med.Pocket"), NOT the Item Pocket
+#    Nugget E5, Big Nugget E6, Repel 5D, Max Repel 5F, Escape Rope 60 -> ITEM
+#  Item id 00 = NO_ITEM, but names.asm prints it as "Park Ball". A row that
+#  says "Park Ball x0" in the Item Pocket is a GHOST (id=0,qty=0), not a real
+#  Park Ball. Master Ball (04) also belongs in Balls; if it sits in Items it is
+#  stuck (Toss routes to the Ball pocket and will not remove the Items row).
+#
+#  Med / Ball / Item SET codes: count=1 + id + qty + FF terminator.
+#    They REPLACE that whole pocket with one stack (visible even if it was empty).
+#    Enable all rows of ONE SET ~1 s, open Pack on the RIGHT pocket, then OFF.
+#    Then SAVE in-game (codes only change live WRAM until you save).
+#
+#  POTIONS / MEDICINE — must appear under Pack -> Med.Pocket (not Items):
+#    Use a Med SET cheat (or buy with a mart code). After enable/off, open
+#    Med.Pocket. Mart purchases use ReceiveItem (correct pocket) — still look
+#    in Med.Pocket. Enable mart codes ONLY on the shop Buy screen; OFF before leaving.
+#
+#  MART codes: patch shop row 1 only (wCurMart+1 @ D0F9 + display price
+#    wMartItem1BCD @ D002-D004). Real price charged comes from ItemAttributes
+#    (Master Ball 0 = free). Purchases go through ReceiveItem (correct pocket).
+#    ONE mart code at a time. Row 1 is often Potion in early marts.
+#
+# NEW (from 3.2.3.sym):
+#  - Shiny encounter: battle sprite + sparkle + catch read wOTPartyMon1Shiny
+#    @ D29F (NOT wEnemyMon D212). SHINY_MASK=bit7. GS is full-byte write only
+#    (no OR). Value 0xA0 = shiny|Ability1|Hardy. Write lands in the DelayFrame
+#    after LoadEnemyWildmon rolls personality, before the palette/sparkle.
+#  - True wild-species randomizer: NOT possible with GS fixed writes (see README).
+#  - All TMs/HMs: set wTMsHMs ownership flags @ D7F5–D7FF (flag_array).
+#    75 TMs + 6 HMs = 81 bits; last byte 0x01 only (spare bits MUST stay 0
+#    or CountTMsHMs overcounts and the TM pocket menu can freeze).
+#  - Wild-force catch: wTempEnemyMonSpecies @ D22E + wWildMonForm
+#    @ D467 (PLAIN_FORM=1). Enable ONE while hunting; disable after catch.
+#    Pattern: 01XX2ED2+010167D4 (XX = species id from pokemon_constants.asm).
+#
+# BATTLE PIXEL BLOCK (left of Fight on command menu): not caused by bag/.cht.
+#  PC MoveInfoBox (0f:6261) draws type/category icons at hlcoord 0,8 (textbox
+#  3x9 → rows 8..12 cols 0..10; icons $59-$5E at hlcoord 1,9). Fight menu is
+#  menu_coords 8,12,19,17 — MoveInfoBox bottom overlaps command-area top/left.
+#  After move-select cancel, PC restores wTempTileMap + copies PLAYER pal into
+#  PAL_BATTLE_BG_TYPE_CAT; leftover icon/border tiles with wrong pal = blue/white
+#  noisy block. ROM-side leftover (or incomplete restore), NOT dual blit / night
+#  mode / cheats overlay. GS cannot write VRAM; no safe firmware clear without
+#  breaking live MoveInfoBox. Only battle WRAM cheat is battle Party lead full HP.
+
+cheats = 49
+
+cheat0_desc = "Max Money (9999999)"
+cheat0_code = "0198E5D7+0196E6D7+017FE7D7"
+cheat0_enable = false
+
+cheat1_desc = "Max Coins (9999)"
+cheat1_code = "0127ECD7+010FEDD7"
+cheat1_enable = false
+
+cheat2_desc = "Med SET: Rare Candy x99 (replaces Med)"
+cheat2_code = "0101BFD8+0130C0D8+0163C1D8+01FFC2D8"
+cheat2_enable = false
+
+cheat3_desc = "Ball SET: Master Ball x99 (replaces Ball)"
+cheat3_code = "01010BD9+01040CD9+01630DD9+01FF0ED9"
+cheat3_enable = false
+
+cheat4_desc = "Item SET: Nugget x99 (replaces Items)"
+cheat4_code = "010127D8+01E528D8+016329D8+01FF2AD8"
+cheat4_enable = false
+
+cheat5_desc = "Item SET: Big Nugget x99 (replaces Items)"
+cheat5_code = "010127D8+01E628D8+016329D8+01FF2AD8"
+cheat5_enable = false
+
+cheat6_desc = "Item SET: Max Repel x99 (replaces Items)"
+cheat6_code = "010127D8+015F28D8+016329D8+01FF2AD8"
+cheat6_enable = false
+
+cheat7_desc = "Item SET: Escape Rope x99 (replaces Items)"
+cheat7_code = "010127D8+016028D8+016329D8+01FF2AD8"
+cheat7_enable = false
+
+cheat8_desc = "Party1 Max EVs (all 255)"
+cheat8_code = "01FFE1DC+01FFE2DC+01FFE3DC+01FFE4DC+01FFE5DC+01FFE6DC"
+cheat8_enable = false
+
+cheat9_desc = "Party1 Max DVs (HP/Atk Def/Spe SpA/SpD)"
+cheat9_code = "01FFE7DC+01FFE8DC+01FFE9DC"
+cheat9_enable = false
+
+cheat10_desc = "Party1 Max Happiness"
+cheat10_code = "01FFF0DC"
+cheat10_enable = false
+
+cheat11_desc = "Battle: Party lead full HP"
+cheat11_code = "0103B8C4+01E7B9C4+0103BAC4+01E7BBC4"
+cheat11_enable = false
+
+cheat12_desc = "Shiny encounter (OT personality D29F; sets Ability1+Hardy)"
+cheat12_code = "01A09FD2"
+cheat12_enable = false
+
+cheat13_desc = "Mart row1: Rare Candy (Buy only)"
+cheat13_code = "0130F9D0+010102D0+010003D0+010004D0"
+cheat13_enable = false
+
+cheat14_desc = "Mart row1: Master Ball free(Buy)"
+cheat14_code = "0104F9D0+010002D0+010003D0+010004D0"
+cheat14_enable = false
+
+cheat15_desc = "All TMs + HMs (wTMsHMs flags; non-glitchy)"
+cheat15_code = "01FFF5D7+01FFF6D7+01FFF7D7+01FFF8D7+01FFF9D7+01FFFAD7+01FFFBD7+01FFFCD7+01FFFDD7+01FFFED7+0101FFD7"
+cheat15_enable = false
+
+cheat16_desc = "Wild force: Marill (enable while hunting; off after)"
+cheat16_code = "01B72ED2+010167D4"
+cheat16_enable = false
+
+cheat17_desc = "Wild force: Mew (enable while hunting; off after)"
+cheat17_code = "01972ED2+010167D4"
+cheat17_enable = false
+
+cheat18_desc = "Wild force: Mewtwo (enable while hunting; off after)"
+cheat18_code = "01962ED2+010167D4"
+cheat18_enable = false
+
+cheat19_desc = "Wild force: Bulbasaur (enable while hunting; off after)"
+cheat19_code = "01012ED2+010167D4"
+cheat19_enable = false
+
+cheat20_desc = "Wild force: Charmander (enable while hunting; off after)"
+cheat20_code = "01042ED2+010167D4"
+cheat20_enable = false
+
+cheat21_desc = "Wild force: Squirtle (enable while hunting; off after)"
+cheat21_code = "01072ED2+010167D4"
+cheat21_enable = false
+
+cheat22_desc = "Wild force: Lugia (enable while hunting; off after)"
+cheat22_code = "01F92ED2+010167D4"
+cheat22_enable = false
+
+cheat23_desc = "Wild force: Ho-Oh (enable while hunting; off after)"
+cheat23_code = "01FA2ED2+010167D4"
+cheat23_enable = false
+
+cheat24_desc = "Wild force: Articuno (enable while hunting; off after)"
+cheat24_code = "01902ED2+010167D4"
+cheat24_enable = false
+
+cheat25_desc = "Wild force: Zapdos (enable while hunting; off after)"
+cheat25_code = "01912ED2+010167D4"
+cheat25_enable = false
+
+cheat26_desc = "Wild force: Moltres (enable while hunting; off after)"
+cheat26_code = "01922ED2+010167D4"
+cheat26_enable = false
+
+cheat27_desc = "Wild force: Pichu (enable while hunting; off after)"
+cheat27_code = "01AC2ED2+010167D4"
+cheat27_enable = false
+
+cheat28_desc = "Wild force: Eevee (enable while hunting; off after)"
+cheat28_code = "01852ED2+010167D4"
+cheat28_enable = false
+
+cheat29_desc = "Wild force: Vaporeon (enable while hunting; off after)"
+cheat29_code = "01862ED2+010167D4"
+cheat29_enable = false
+
+cheat30_desc = "Wild force: Jolteon (enable while hunting; off after)"
+cheat30_code = "01872ED2+010167D4"
+cheat30_enable = false
+
+cheat31_desc = "Wild force: Flareon (enable while hunting; off after)"
+cheat31_code = "01882ED2+010167D4"
+cheat31_enable = false
+
+cheat32_desc = "Wild force: Espeon (enable while hunting; off after)"
+cheat32_code = "01C42ED2+010167D4"
+cheat32_enable = false
+
+cheat33_desc = "Wild force: Umbreon (enable while hunting; off after)"
+cheat33_code = "01C52ED2+010167D4"
+cheat33_enable = false
+
+cheat34_desc = "Wild force: Abra (enable while hunting; off after)"
+cheat34_code = "013F2ED2+010167D4"
+cheat34_enable = false
+
+cheat35_desc = "Wild force: Gastly (enable while hunting; off after)"
+cheat35_code = "015C2ED2+010167D4"
+cheat35_enable = false
+
+cheat36_desc = "Wild force: Mr. Mime (enable while hunting; off after)"
+cheat36_code = "017A2ED2+010167D4"
+cheat36_enable = false
+
+cheat37_desc = "Med SET: Potion x99 (replaces Med)"
+cheat37_code = "0101BFD8+0119C0D8+0163C1D8+01FFC2D8"
+cheat37_enable = false
+
+cheat38_desc = "Med SET: Super Potion x99 (replaces Med)"
+cheat38_code = "0101BFD8+011AC0D8+0163C1D8+01FFC2D8"
+cheat38_enable = false
+
+cheat39_desc = "Med SET: Hyper Potion x99 (replaces Med)"
+cheat39_code = "0101BFD8+011BC0D8+0163C1D8+01FFC2D8"
+cheat39_enable = false
+
+cheat40_desc = "Med SET: Max Potion x99 (replaces Med)"
+cheat40_code = "0101BFD8+011CC0D8+0163C1D8+01FFC2D8"
+cheat40_enable = false
+
+cheat41_desc = "Med SET: Full Restore x99 (replaces Med)"
+cheat41_code = "0101BFD8+0123C0D8+0163C1D8+01FFC2D8"
+cheat41_enable = false
+
+cheat42_desc = "Med SET: Max Revive x99 (replaces Med)"
+cheat42_code = "0101BFD8+0125C0D8+0163C1D8+01FFC2D8"
+cheat42_enable = false
+
+cheat43_desc = "Med SET: Full Heal x99 (replaces Med)"
+cheat43_code = "0101BFD8+0122C0D8+0163C1D8+01FFC2D8"
+cheat43_enable = false
+
+cheat44_desc = "Ball SET: Ultra Ball x99 (replaces Ball)"
+cheat44_code = "01010BD9+01030CD9+01630DD9+01FF0ED9"
+cheat44_enable = false
+
+cheat45_desc = "Ball SET: Poke Ball x99 (replaces Ball)"
+cheat45_code = "01010BD9+01010CD9+01630DD9+01FF0ED9"
+cheat45_enable = false
+
+cheat46_desc = "Mart row1: Max Potion (Buy only)"
+cheat46_code = "011CF9D0+010002D0+012503D0+010004D0"
+cheat46_enable = false
+
+cheat47_desc = "Mart row1: Full Restore(Buy only)"
+cheat47_code = "0123F9D0+010002D0+013003D0+010004D0"
+cheat47_enable = false
+
+cheat48_desc = "Mart row1: Potion (Buy only)"
+cheat48_code = "0119F9D0+010002D0+010003D0+010004D0"
+cheat48_enable = false

@@ -1,0 +1,195 @@
+# Pokemon Yellow Legacy (patched) GameShark .cht for Game Station dual-screen
+# Built from cRz-Shadows/Pokemon_Yellow_Legacy pokeyellow.sym (WRAM labels).
+# ROM basename Dirt confirmed: PokemonYellowLegacy
+#   PokemonYellowLegacy.gbc  ->  PokemonYellowLegacy.cht
+# Path on SD: /gbc_cheats/PokemonYellowLegacy.cht
+# WARNING: wrong-hack / wrong-version codes can corrupt saves. Backup .sav first.
+# Codes load DISABLED; press c in-game, enable only what you need.
+# Each "+" part shows as its own menu row (desc #1, #2, ...): turn ON every
+# row of the cheat you want, and turn them all OFF again afterwards.
+# NEVER use "Enable all" (bag / mart / wild-force codes fight over the same bytes).
+#
+# === vs Polished Crystal 3.2.3 ===
+# Yellow Legacy is Gen1 (pokeyellow-based). Addresses are NOT PC addresses.
+# BAG: single Items pocket (wNumBagItems D31C, slot1 D31D/D31E). No Med/Ball
+#   pockets. Capacity 59 (hack-expanded; pret vanilla was 20). Money/coins sit
+#   AFTER the expanded bag (wPlayerMoney D394, wPlayerCoins D5F1 = pret+0x4E).
+# SHINY: SKIPPED — Yellow Legacy has no shiny personality/palette system
+#   (no wOTPartyMon1Shiny / Gen2 shiny bit). Cannot mirror PC D29F write.
+# RUNNING SHOES: already in the hack as hold-B sprint (home/overworld.asm
+#   DoBikeSpeedup when B_BUTTON held). NOT a permanent always-on setting.
+#   GS type 01/91 is a full-byte write (no OR): forcing B on hJoyHeld (FFB4)
+#   would clobber D-pad/A and break menus/battles. No dedicated always-run
+#   WRAM flag exists. Always-run cheat NOT added (unsafe / unmappable).
+# ALL TMs/HMs: SKIPPED — Gen1 has no wTMsHMs ownership flag array; TMs are
+#   ordinary bag items ($C4+). Stuffing 55 bag slots is not the PC-safe path.
+# Big Nugget / Marill / Lugia / Ho-Oh / Pichu / Espeon / Umbreon: Gen2-only or
+#   absent from Yellow Legacy — skipped.
+# Party happiness: Gen1 party_struct has no happiness byte (skip). Yellow has
+#   wPikachuHappiness for the follower only — not mirrored as Party1 happiness.
+#
+# BAG / ITEM CODES
+#  Overwrites bag slot 1 (id@D31D qty@D31E). Bag must already hold >=1 item.
+#  Enable 1-2 s, open bag to check, then OFF. Only ONE bag slot cheat at a time.
+#  GS writes go into live WRAM; an in-game SAVE makes them permanent.
+#
+#  RECOVERY: if slot1 is a stuck/wrong item, enable a FIX row briefly, then toss.
+#
+# MART codes: patch Buy-menu row 1 only (wItemList+1 @ CF7B). Real price comes
+#  from ItemPrices in ROM (Master Ball = 0 = free; Rare Candy = 4800).
+#  Enable ONLY inside a shop Buy menu; OFF before leaving. ONE mart code at a time.
+#
+# WILD-FORCE: overwrites all 10 grass + 10 water encounter SPECIES bytes
+#  (wGrassMons/wWaterMons level,species pairs @ D887/D8A4). Levels stay map-
+#  native. Enable ONE while hunting grass/water; disable after catch.
+#  (Per-frame write to wEnemyMonSpecies2 alone is too late: LoadEnemyMonData
+#   runs in the same frame as TryDoWildEncounter with no DelayFrame yield.)
+#
+# PARTY: codes affect party slot 1 — swap the mon you want to the front.
+#  Max StatExp = Gen1 EV analogue (HP/Atk/Def/Spe/Spc Exp words @ D17B–D184).
+#  Level 100 writes the level byte only; deposit/withdraw or rare-candy to
+#  recalc stats if needed. Battle HP writes wBattleMon HP/MaxHP during battle.
+#
+
+
+cheats = 35
+
+cheat0_desc = "Max Money (999999)"
+cheat0_code = "019994D3+019995D3+019996D3"
+cheat0_enable = false
+
+cheat1_desc = "Max Coins (9999)"
+cheat1_code = "0199F1D5+0199F2D5"
+cheat1_enable = false
+
+cheat2_desc = "Bag slot1: Rare Candy x99"
+cheat2_code = "01281DD3+01631ED3"
+cheat2_enable = false
+
+cheat3_desc = "Bag slot1: Master Ball x99"
+cheat3_code = "01011DD3+01631ED3"
+cheat3_enable = false
+
+cheat4_desc = "Bag slot1: Nugget x99"
+cheat4_code = "01311DD3+01631ED3"
+cheat4_enable = false
+
+cheat5_desc = "Bag slot1: Max Repel x99"
+cheat5_code = "01391DD3+01631ED3"
+cheat5_enable = false
+
+cheat6_desc = "Bag slot1: Escape Rope x99"
+cheat6_code = "011D1DD3+01631ED3"
+cheat6_enable = false
+
+cheat7_desc = "Party1 Max StatExp (all FFFF)"
+cheat7_code = "01FF7BD1+01FF7CD1+01FF7DD1+01FF7ED1+01FF7FD1+01FF80D1+01FF81D1+01FF82D1+01FF83D1+01FF84D1"
+cheat7_enable = false
+
+cheat8_desc = "Party1 Max DVs (FFFF)"
+cheat8_code = "01FF85D1+01FF86D1"
+cheat8_enable = false
+
+cheat9_desc = "Battle: lead full HP (999/999)"
+cheat9_code = "010314D0+01E715D0+010322D0+01E723D0"
+cheat9_enable = false
+
+cheat10_desc = "Party1 Level 100"
+cheat10_code = "01648BD1"
+cheat10_enable = false
+
+cheat11_desc = "Mart row1: Rare Candy (Buy only)"
+cheat11_code = "01287BCF"
+cheat11_enable = false
+
+cheat12_desc = "Mart row1: Master Ball free(Buy)"
+cheat12_code = "01017BCF"
+cheat12_enable = false
+
+cheat13_desc = "Wild force: Bulbasaur (hunt; off after)"
+cheat13_code = "019988D8+01998AD8+01998CD8+01998ED8+019990D8+019992D8+019994D8+019996D8+019998D8+01999AD8+0199A5D8+0199A7D8+0199A9D8+0199ABD8+0199ADD8+0199AFD8+0199B1D8+0199B3D8+0199B5D8+0199B7D8"
+cheat13_enable = false
+
+cheat14_desc = "Wild force: Charmander (hunt; off after)"
+cheat14_code = "01B088D8+01B08AD8+01B08CD8+01B08ED8+01B090D8+01B092D8+01B094D8+01B096D8+01B098D8+01B09AD8+01B0A5D8+01B0A7D8+01B0A9D8+01B0ABD8+01B0ADD8+01B0AFD8+01B0B1D8+01B0B3D8+01B0B5D8+01B0B7D8"
+cheat14_enable = false
+
+cheat15_desc = "Wild force: Squirtle (hunt; off after)"
+cheat15_code = "01B188D8+01B18AD8+01B18CD8+01B18ED8+01B190D8+01B192D8+01B194D8+01B196D8+01B198D8+01B19AD8+01B1A5D8+01B1A7D8+01B1A9D8+01B1ABD8+01B1ADD8+01B1AFD8+01B1B1D8+01B1B3D8+01B1B5D8+01B1B7D8"
+cheat15_enable = false
+
+cheat16_desc = "Wild force: Mew (hunt; off after)"
+cheat16_code = "011588D8+01158AD8+01158CD8+01158ED8+011590D8+011592D8+011594D8+011596D8+011598D8+01159AD8+0115A5D8+0115A7D8+0115A9D8+0115ABD8+0115ADD8+0115AFD8+0115B1D8+0115B3D8+0115B5D8+0115B7D8"
+cheat16_enable = false
+
+cheat17_desc = "Wild force: Mewtwo (hunt; off after)"
+cheat17_code = "018388D8+01838AD8+01838CD8+01838ED8+018390D8+018392D8+018394D8+018396D8+018398D8+01839AD8+0183A5D8+0183A7D8+0183A9D8+0183ABD8+0183ADD8+0183AFD8+0183B1D8+0183B3D8+0183B5D8+0183B7D8"
+cheat17_enable = false
+
+cheat18_desc = "Wild force: Articuno (hunt; off after)"
+cheat18_code = "014A88D8+014A8AD8+014A8CD8+014A8ED8+014A90D8+014A92D8+014A94D8+014A96D8+014A98D8+014A9AD8+014AA5D8+014AA7D8+014AA9D8+014AABD8+014AADD8+014AAFD8+014AB1D8+014AB3D8+014AB5D8+014AB7D8"
+cheat18_enable = false
+
+cheat19_desc = "Wild force: Zapdos (hunt; off after)"
+cheat19_code = "014B88D8+014B8AD8+014B8CD8+014B8ED8+014B90D8+014B92D8+014B94D8+014B96D8+014B98D8+014B9AD8+014BA5D8+014BA7D8+014BA9D8+014BABD8+014BADD8+014BAFD8+014BB1D8+014BB3D8+014BB5D8+014BB7D8"
+cheat19_enable = false
+
+cheat20_desc = "Wild force: Moltres (hunt; off after)"
+cheat20_code = "014988D8+01498AD8+01498CD8+01498ED8+014990D8+014992D8+014994D8+014996D8+014998D8+01499AD8+0149A5D8+0149A7D8+0149A9D8+0149ABD8+0149ADD8+0149AFD8+0149B1D8+0149B3D8+0149B5D8+0149B7D8"
+cheat20_enable = false
+
+cheat21_desc = "Wild force: Eevee (hunt; off after)"
+cheat21_code = "016688D8+01668AD8+01668CD8+01668ED8+016690D8+016692D8+016694D8+016696D8+016698D8+01669AD8+0166A5D8+0166A7D8+0166A9D8+0166ABD8+0166ADD8+0166AFD8+0166B1D8+0166B3D8+0166B5D8+0166B7D8"
+cheat21_enable = false
+
+cheat22_desc = "Wild force: Vaporeon (hunt; off after)"
+cheat22_code = "016988D8+01698AD8+01698CD8+01698ED8+016990D8+016992D8+016994D8+016996D8+016998D8+01699AD8+0169A5D8+0169A7D8+0169A9D8+0169ABD8+0169ADD8+0169AFD8+0169B1D8+0169B3D8+0169B5D8+0169B7D8"
+cheat22_enable = false
+
+cheat23_desc = "Wild force: Jolteon (hunt; off after)"
+cheat23_code = "016888D8+01688AD8+01688CD8+01688ED8+016890D8+016892D8+016894D8+016896D8+016898D8+01689AD8+0168A5D8+0168A7D8+0168A9D8+0168ABD8+0168ADD8+0168AFD8+0168B1D8+0168B3D8+0168B5D8+0168B7D8"
+cheat23_enable = false
+
+cheat24_desc = "Wild force: Flareon (hunt; off after)"
+cheat24_code = "016788D8+01678AD8+01678CD8+01678ED8+016790D8+016792D8+016794D8+016796D8+016798D8+01679AD8+0167A5D8+0167A7D8+0167A9D8+0167ABD8+0167ADD8+0167AFD8+0167B1D8+0167B3D8+0167B5D8+0167B7D8"
+cheat24_enable = false
+
+cheat25_desc = "FIX Bag slot1 -> Repel x1"
+cheat25_code = "011E1DD3+01011ED3"
+cheat25_enable = false
+
+cheat26_desc = "FIX Bag slot1 -> Poke Ball x1"
+cheat26_code = "01041DD3+01011ED3"
+cheat26_enable = false
+
+cheat27_desc = "Bag slot1: Max Potion x99"
+cheat27_code = "01111DD3+01631ED3"
+cheat27_enable = false
+
+cheat28_desc = "Bag slot1: Hyper Potion x99"
+cheat28_code = "01121DD3+01631ED3"
+cheat28_enable = false
+
+cheat29_desc = "Bag slot1: Full Restore x99"
+cheat29_code = "01101DD3+01631ED3"
+cheat29_enable = false
+
+cheat30_desc = "Bag slot1: Max Revive x99"
+cheat30_code = "01361DD3+01631ED3"
+cheat30_enable = false
+
+cheat31_desc = "Bag slot1: Full Heal x99"
+cheat31_code = "01341DD3+01631ED3"
+cheat31_enable = false
+
+cheat32_desc = "Bag slot1: Ultra Ball x99"
+cheat32_code = "01021DD3+01631ED3"
+cheat32_enable = false
+
+cheat33_desc = "Mart row1: Max Potion (Buy only)"
+cheat33_code = "01117BCF"
+cheat33_enable = false
+
+cheat34_desc = "Mart row1: Full Restore(Buy only)"
+cheat34_code = "01107BCF"
+cheat34_enable = false

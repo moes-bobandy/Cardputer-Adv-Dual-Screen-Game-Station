@@ -137,6 +137,8 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
 
         // Cheat menu pauses emu (no gnuboy_run while open)
         if (gbc_cheats_menu_requested()) {
+            /* Persist any pending in-game SRAM before a long pause. */
+            gbc_save_force_flush();
             gbc_cheats_run_menu();
             next_frame_us = esp_timer_get_time();
             continue;

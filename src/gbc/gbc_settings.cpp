@@ -8,7 +8,7 @@ extern "C" {
 }
 
 static int clamp_pal(int pal) {
-  if (pal < 0 || pal >= GB_PALETTE_COUNT) return GB_PALETTE_SGB;
+  if (pal < 0 || pal >= GB_PALETTE_COUNT) return 36;
   return pal;
 }
 
@@ -26,8 +26,7 @@ void gbc_settings_load(void) {
   gbcZoomPercent = clamp_zoom(prefs.getInt("gbc_zoom", 100));
   gbc_colour_correct = prefs.getBool("gbc_cc", false) ? 1 : 0;
   gbc_frame_blend = prefs.getBool("gbc_blend", false) ? 1 : 0;
-  gbc_night = prefs.getBool("gbc_night", false) ? 1 : 0;
-  int pal = clamp_pal(prefs.getInt("gb_pal", GB_PALETTE_SGB));
+  int pal = clamp_pal(prefs.getInt("gb_pal", 36));
   gbPalette = pal;
   gbcDmgPalette = pal;
   prefs.end();
@@ -41,7 +40,6 @@ void gbc_settings_save(void) {
   prefs.putInt("gbc_zoom", clamp_zoom(gbcZoomPercent));
   prefs.putBool("gbc_cc", gbc_colour_correct != 0);
   prefs.putBool("gbc_blend", gbc_frame_blend != 0);
-  prefs.putBool("gbc_night", gbc_night != 0);
   int pal = (gbPalette >= 0) ? gbPalette : gbcDmgPalette;
   prefs.putInt("gb_pal", clamp_pal(pal));
   prefs.end();

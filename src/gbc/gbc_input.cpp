@@ -107,28 +107,44 @@ extern "C" int gbc_input_poll(void)
         wasDown = cDown;
     }
 
-    // ================== VIDEO TOGGLES ==================
-    // Edge-triggered, same reason as cheats: isChange() is already consumed.
+
+    // ================== NIGHT MODE (orange warm filter) ==================
+    // Own rising-edge: Keyboard.isChange() is already consumed by screen toggle
+    // above in the same poll (same pitfall as cheat hotkey 'c').
+    {
+        static bool wasNightDown = false;
+        bool nDown = M5Cardputer.Keyboard.isKeyPressed(CARDPUTER_NIGHT_TOGGLE) ||
+                     M5Cardputer.Keyboard.isKeyPressed('N');
+        if (!nDown) {
+            for (char ch : ks.word) {
+                if (ch == CARDPUTER_NIGHT_TOGGLE || ch == 'N') { nDown = true; break; }
+            }
+        }
+        if (nDown && !wasNightDown) {
+            gbc_display_toggle_night_mode();
+            EMU_LOG("[GBC] Night mode -> %s\n",
+                    gbc_display_night_mode() ? "ON" : "OFF");
+            wasNightDown = true;
+            return dummy_ret;
+        }
+        wasNightDown = nDown;
+    }
+
+    // Blend and GBC colour. Night stays on its own edge above.
     {
         static bool blendWas = false;
         static bool ccWas = false;
-        static bool nightWas = false;
         bool blendDown = M5Cardputer.Keyboard.isKeyPressed('b') ||
                          M5Cardputer.Keyboard.isKeyPressed('B');
         bool ccDown = M5Cardputer.Keyboard.isKeyPressed('g') ||
                       M5Cardputer.Keyboard.isKeyPressed('G');
-        bool nightDown = M5Cardputer.Keyboard.isKeyPressed('n') ||
-                         M5Cardputer.Keyboard.isKeyPressed('N');
         bool blendEdge = blendDown && !blendWas;
         bool ccEdge = ccDown && !ccWas;
-        bool nightEdge = nightDown && !nightWas;
         blendWas = blendDown;
         ccWas = ccDown;
-        nightWas = nightDown;
         if (blendEdge) gbc_toggle_frame_blend();
         if (ccEdge) gbc_toggle_colour_correct();
-        if (nightEdge) gbc_toggle_night();
-        if (blendEdge || ccEdge || nightEdge) return dummy_ret;
+        if (blendEdge || ccEdge) return dummy_ret;
     }
 
     // ================== DIRECTIONS ==================
