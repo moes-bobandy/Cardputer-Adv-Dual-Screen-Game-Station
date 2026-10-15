@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include "share/input.h"
 #include "gbc_cheats.h"
+#include "gbc_display.h"
+#include "gbc_settings.h"
 
 extern "C" {
   #include "gnuboy/gnuboy.h"
@@ -12,6 +14,9 @@ extern "C" {
 extern bool gbcFullScreen;
 extern int  gbcZoomPercent;
 extern int  gbPalette;
+extern int  gbcDmgPalette;
+
+static bool s_zoomDirty = false;
 
 extern "C" int gbc_input_poll(void)
 {   
@@ -55,16 +60,19 @@ extern "C" int gbc_input_poll(void)
                     gbcFullScreen  = false;
                 }
             }
+            gbc_settings_save();
         } else {
             //
             // palette toggle (used by GB only)
             //
             gbPalette++;
-            if (gbPalette > 36) {
+            if (gbPalette >= GB_PALETTE_COUNT) {
                 gbPalette = 0;
             }
+            gbcDmgPalette = gbPalette;
 
             gnuboy_set_palette((gb_palette_t)gbPalette);
+            gbc_settings_save();
             EMU_LOG("[GBC] Palette -> %d\n", gbPalette);
         }
 
@@ -97,6 +105,30 @@ extern "C" int gbc_input_poll(void)
             return dummy_ret;
         }
         wasDown = cDown;
+    }
+
+    // ================== VIDEO TOGGLES ==================
+    // Edge-triggered, same reason as cheats: isChange() is already consumed.
+    {
+        static bool blendWas = false;
+        static bool ccWas = false;
+        static bool nightWas = false;
+        bool blendDown = M5Cardputer.Keyboard.isKeyPressed('b') ||
+                         M5Cardputer.Keyboard.isKeyPressed('B');
+        bool ccDown = M5Cardputer.Keyboard.isKeyPressed('g') ||
+                      M5Cardputer.Keyboard.isKeyPressed('G');
+        bool nightDown = M5Cardputer.Keyboard.isKeyPressed('n') ||
+                         M5Cardputer.Keyboard.isKeyPressed('N');
+        bool blendEdge = blendDown && !blendWas;
+        bool ccEdge = ccDown && !ccWas;
+        bool nightEdge = nightDown && !nightWas;
+        blendWas = blendDown;
+        ccWas = ccDown;
+        nightWas = nightDown;
+        if (blendEdge) gbc_toggle_frame_blend();
+        if (ccEdge) gbc_toggle_colour_correct();
+        if (nightEdge) gbc_toggle_night();
+        if (blendEdge || ccEdge || nightEdge) return dummy_ret;
     }
 
     // ================== DIRECTIONS ==================
@@ -151,12 +183,18 @@ extern "C" int gbc_input_poll(void)
     if (ks.fn && M5Cardputer.Keyboard.isKeyPressed(CARDPUTER_ZOOM_PLUS)) {
         if (!gbcFullScreen) gbcFullScreen = true;
         gbcZoomPercent = (gbcZoomPercent < 150) ? (gbcZoomPercent + 1) : 150;
+        s_zoomDirty = true;
         return dummy_ret;
     }
     if (ks.fn && M5Cardputer.Keyboard.isKeyPressed(CARDPUTER_ZOOM_MINUS)) {
         if (!gbcFullScreen) gbcFullScreen = true;
         gbcZoomPercent = (gbcZoomPercent > 100) ? (gbcZoomPercent - 1) : 100;
+        s_zoomDirty = true;
         return dummy_ret;
+    }
+    if (s_zoomDirty) {
+        s_zoomDirty = false;
+        gbc_settings_save();
     }
 
     return pad;

@@ -2,21 +2,31 @@
 
 #include <Arduino.h>
 #include <M5Cardputer.h>
+#include <string.h>
 #include "esp_heap_caps.h"
 extern "C" {
   #include "gnuboy/gnuboy.h"
+  #include "gnuboy/lcd.h"
 #include "share/emu_log_cpp.h"
 }
 
 #include "../cardputer/CardputerView.h"
 #include "share/game_save.h"
+#include "gbc_settings.h"
 
 extern LGFX_ILI9341 externalDisplay;
 
 // Globals
-bool gbcFullScreen = true;
+// Integer scale is the default (clean equal pixels, black border).
+// gbcFullScreen selects the near-fullscreen nearest-neighbour fit.
+bool gbcFullScreen = false;
 int  gbcZoomPercent = 100;
-int gbPalette = 36; // DMG default palette
+int gbPalette = GB_PALETTE_SGB; // previous field default (index 36)
+int gbcDmgPalette = GB_PALETTE_SGB;
+
+extern "C" volatile int gbc_colour_correct = 0;
+extern "C" volatile int gbc_frame_blend = 0;
+extern "C" volatile int gbc_night = 0;
 
 typedef struct {
   const uint16_t *fb;
@@ -40,6 +50,7 @@ struct GbcDisplayTransform {
   int dstH;
   int xOffset;
   int yOffset;
+  int intScale; // >0 uniform integer pixels; 0 = nearest map
 };
 
 static GbcDisplayTransform s_transform;
@@ -53,11 +64,52 @@ static int  s_lastSrcH        = 0;
 static int  s_lastLcdW        = 0;
 static int  s_lastLcdH        = 0;
 
+static uint16_t* s_prev = nullptr;
+static uint16_t* s_blend = nullptr;
+static int s_blendPixels = 0;
+static bool s_prevValid = false;
+
+static const int kCuratedDmg[] = {
+  GB_PALETTE_LCD,
+  GB_PALETTE_GREY,
+  GB_PALETTE_POCKET,
+  GB_PALETTE_LIGHT,
+  GB_PALETTE_DMG,
+  GB_PALETTE_MGB0,
+  GB_PALETTE_MGB1,
+  GB_PALETTE_SGB,
+};
+static constexpr int kCuratedDmgCount = (int)(sizeof(kCuratedDmg) / sizeof(kCuratedDmg[0]));
+
 static inline int clampi(int v, int lo, int hi)
 {
   if (v < lo) return lo;
   if (v > hi) return hi;
   return v;
+}
+
+static inline uint16_t avg565(uint16_t a, uint16_t b)
+{
+  uint32_t ar = a & 0xF81F;
+  uint32_t br = b & 0xF81F;
+  uint32_t ag = a & 0x07E0;
+  uint32_t bg = b & 0x07E0;
+  return (uint16_t)((((ar + br) >> 1) & 0xF81F) | (((ag + bg) >> 1) & 0x07E0));
+}
+
+static inline uint16_t dim565(uint16_t c)
+{
+  return (uint16_t)((c & 0xF7DE) >> 1);
+}
+
+static void gbc_hud(const char* text)
+{
+  auto& id = M5Cardputer.Display;
+  id.fillScreen(TFT_BLACK);
+  id.setTextDatum(middle_center);
+  id.setTextColor(TFT_WHITE, TFT_BLACK);
+  id.setTextSize(1);
+  id.drawString(text, id.width() / 2, id.height() / 2);
 }
 
 // Bresenham / error-diffusion: even duplicate (or skip) distribution across src.
@@ -110,6 +162,7 @@ static void gbc_display_transform(int srcW, int srcH)
   s_lastSrcH        = srcH;
   s_lastLcdW        = lcdW;
   s_lastLcdH        = lcdH;
+  s_transform.intScale = 0;
 
   // Non-100% zoom: keep float-built maps (rare path). Prefer 100% fully integer.
   if (zoom != 100) {
@@ -168,23 +221,32 @@ static void gbc_display_transform(int srcW, int srcH)
     return;
   }
 
-  // ---- 100% zoom: aspect-correct letterbox, Bresenham maps ----
-  // Fullscreen and windowed both show the entire 160x144 frame (no crop).
-  // scale = min(lcdW/srcW, lcdH/srcH); center with black bars.
+  // Integer scale: every source pixel is an N×N block, centred, black border.
+  if (!full) {
+    int iscaleX = lcdW / srcW;
+    int iscaleY = lcdH / srcH;
+    int iscale  = (iscaleX < iscaleY) ? iscaleX : iscaleY;
+    if (iscale < 1) iscale = 1;
+
+    int dstW = srcW * iscale;
+    int dstH = srcH * iscale;
+    if (dstW > lcdW) dstW = lcdW;
+    if (dstH > lcdH) dstH = lcdH;
+
+    s_transform.dstW     = dstW;
+    s_transform.dstH     = dstH;
+    s_transform.xOffset  = (lcdW - dstW) / 2;
+    s_transform.yOffset  = (lcdH - dstH) / 2;
+    s_transform.intScale = iscale;
+    return;
+  }
+
+  // Near-fullscreen nearest neighbour: aspect-fit, Bresenham maps, black bars.
   {
     float scaleX = (float)lcdW / (float)srcW;
     float scaleY = (float)lcdH / (float)srcH;
     float scale  = (scaleX < scaleY) ? scaleX : scaleY;
     if (scale <= 0.0f) scale = 1.0f;
-
-    // Non-fullscreen: keep integer max scale (usually 1x) when it fits.
-    if (!full) {
-      int iscaleX = lcdW / srcW;
-      int iscaleY = lcdH / srcH;
-      int iscale  = (iscaleX < iscaleY) ? iscaleX : iscaleY;
-      if (iscale < 1) iscale = 1;
-      scale = (float)iscale;
-    }
 
     int dstW = (int)(srcW * scale);
     int dstH = (int)(srcH * scale);
@@ -206,6 +268,79 @@ static void gbc_display_transform(int srcW, int srcH)
   }
 }
 
+static bool ensure_blend(int pixels)
+{
+  if (pixels <= 0) return false;
+  if (s_blendPixels == pixels && s_prev && s_blend) return true;
+  if (s_prev) { free(s_prev); s_prev = nullptr; }
+  if (s_blend) { free(s_blend); s_blend = nullptr; }
+  s_blendPixels = 0;
+  s_prevValid = false;
+  size_t bytes = (size_t)pixels * sizeof(uint16_t);
+  s_prev = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  s_blend = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!s_prev || !s_blend) {
+    if (s_prev) { free(s_prev); s_prev = nullptr; }
+    if (s_blend) { free(s_blend); s_blend = nullptr; }
+    s_prev = (uint16_t*)malloc(bytes);
+    s_blend = (uint16_t*)malloc(bytes);
+  }
+  if (!s_prev || !s_blend) {
+    if (s_prev) { free(s_prev); s_prev = nullptr; }
+    if (s_blend) { free(s_blend); s_blend = nullptr; }
+    return false;
+  }
+  s_blendPixels = pixels;
+  return true;
+}
+
+// Average the previous raw frame with this one. Off path does not call this.
+static const uint16_t* blend_frame(const uint16_t* fb, int pitch, int w, int h)
+{
+  if (!gbc_frame_blend || w <= 0 || h <= 0) {
+    s_prevValid = false;
+    return fb;
+  }
+  if (!ensure_blend(w * h)) return fb;
+
+  // Snapshot first so the scale reads stable pixels while the emu keeps writing.
+  if (pitch == w) {
+    memcpy(s_blend, fb, (size_t)w * (size_t)h * sizeof(uint16_t));
+  } else {
+    for (int y = 0; y < h; ++y) {
+      memcpy(s_blend + y * w, fb + y * pitch, (size_t)w * sizeof(uint16_t));
+    }
+  }
+  if (!s_prevValid) {
+    memcpy(s_prev, s_blend, (size_t)w * (size_t)h * sizeof(uint16_t));
+    s_prevValid = true;
+    return s_blend;
+  }
+  const int n = w * h;
+  for (int i = 0; i < n; ++i) {
+    uint16_t cur = s_blend[i];
+    s_blend[i] = avg565(s_prev[i], cur);
+    s_prev[i] = cur;
+  }
+  return s_blend;
+}
+
+static void write_line(uint16_t* dst, const uint16_t* src, int dstW, int iscale, int dim)
+{
+  if (iscale <= 1 && !dim) {
+    memcpy(dst, src, (size_t)dstW * sizeof(uint16_t));
+    return;
+  }
+  if (iscale <= 1) {
+    for (int x = 0; x < dstW; ++x) dst[x] = dim565(src[x]);
+    return;
+  }
+  for (int x = 0; x < dstW; ++x) {
+    uint16_t p = src[x / iscale];
+    dst[x] = dim ? dim565(p) : p;
+  }
+}
+
 static void gbc_display_task(void *arg)
 {
   (void)arg;
@@ -224,16 +359,29 @@ static void gbc_display_task(void *arg)
     const int srcH  = msg.height;
     const int pitch = msg.pitch;
 
+    // Save/menu owns SPI3. Do not start a fillScreen or blit over that.
+    if (share::gameIsSaving()) {
+      continue;
+    }
+
+    // Cover fillScreen inside the transform so wait_idle blocks until SPI is free.
+    s_displayBusBusy = true;
     gbc_display_transform(srcW, srcH);
 
     const int dstW    = s_transform.dstW;
     const int dstH    = s_transform.dstH;
     const int xOffset = s_transform.xOffset;
     const int yOffset = s_transform.yOffset;
+    const int iscale  = s_transform.intScale;
+    const int dim     = gbc_night;
 
     if (dstW <= 0 || dstH <= 0) {
+      s_displayBusBusy = false;
       continue;
     }
+
+    const uint16_t* frame = blend_frame(msg.fb, pitch, srcW, srcH);
+    const int framePitch = (frame == msg.fb) ? pitch : srcW;
 
     // Always use small DMA line batches — never a full-frame SPIRAM/DMA buffer.
     const int batchLines = kBatchLines;
@@ -259,25 +407,34 @@ static void gbc_display_task(void *arg)
     }
 
     if (!s_lineBuf || s_lineCap < need) {
+      s_displayBusBusy = false;
       continue;
     }
 
-    // Do not touch shared SPI while SaveTask holds the bus for SD.
+    // SRAM save may have taken the bus while this frame was scaled.
     if (share::gameIsSaving()) {
+      s_displayBusBusy = false;
       continue;
     }
 
-    s_displayBusBusy = true;
     externalDisplay.startWrite();
 
     for (int y0 = 0; y0 < dstH; y0 += batchLines) {
       const int rows = (y0 + batchLines <= dstH) ? batchLines : (dstH - y0);
       for (int row = 0; row < rows; ++row) {
         const int y = y0 + row;
-        const uint16_t *srcLine = msg.fb + (int)s_yMap[y] * pitch;
         uint16_t *dstLine = s_lineBuf + row * dstW;
-        for (int x = 0; x < dstW; ++x) {
-          dstLine[x] = srcLine[s_xMap[x]];
+        if (iscale > 0) {
+          const int sy = y / iscale;
+          const uint16_t *srcLine = frame + sy * framePitch;
+          write_line(dstLine, srcLine, dstW, iscale, dim);
+        } else {
+          const uint16_t *srcLine = frame + (int)s_yMap[y] * framePitch;
+          if (!dim) {
+            for (int x = 0; x < dstW; ++x) dstLine[x] = srcLine[s_xMap[x]];
+          } else {
+            for (int x = 0; x < dstW; ++x) dstLine[x] = dim565(srcLine[s_xMap[x]]);
+          }
         }
       }
       externalDisplay.setAddrWindow(xOffset, yOffset + y0, dstW, rows);
@@ -289,6 +446,81 @@ static void gbc_display_task(void *arg)
     s_displayBusBusy = false;
     taskYIELD(); // OK after releasing the bus
   }
+}
+
+extern "C" const char* gbc_scale_name(void)
+{
+  return gbcFullScreen ? "Fill" : "Integer";
+}
+
+extern "C" const char* gbc_dmg_palette_name(void)
+{
+  int pal = (gbPalette >= 0) ? gbPalette : gbcDmgPalette;
+  switch (pal) {
+    case GB_PALETTE_DMG: return "BIOS DMG";
+    case GB_PALETTE_MGB0: return "MGB 0";
+    case GB_PALETTE_MGB1: return "MGB 1";
+    case GB_PALETTE_CGB: return "CGB";
+    case GB_PALETTE_SGB: return "SGB";
+    case GB_PALETTE_POCKET: return "Pocket";
+    case GB_PALETTE_GREY: return "Grey";
+    case GB_PALETTE_LCD: return "LCD Green";
+    case GB_PALETTE_LIGHT: return "GB Light";
+    default: {
+      static char buf[20];
+      snprintf(buf, sizeof(buf), "Colorizer %d", pal);
+      return buf;
+    }
+  }
+}
+
+extern "C" void gbc_toggle_scale_mode(void)
+{
+  gbcFullScreen = !gbcFullScreen;
+  gbcZoomPercent = 100;
+  gbc_settings_save();
+  gbc_hud(gbcFullScreen ? "Scale: Fill" : "Scale: Integer");
+}
+
+extern "C" void gbc_toggle_frame_blend(void)
+{
+  gbc_frame_blend = gbc_frame_blend ? 0 : 1;
+  s_prevValid = false;
+  gbc_settings_save();
+  gbc_hud(gbc_frame_blend ? "Blend: On" : "Blend: Off");
+}
+
+extern "C" void gbc_toggle_colour_correct(void)
+{
+  gbc_colour_correct = gbc_colour_correct ? 0 : 1;
+  gb_lcd_pal_dirty();
+  gbc_settings_save();
+  gbc_hud(gbc_colour_correct ? "GBC color: On" : "GBC color: Off");
+}
+
+extern "C" void gbc_toggle_night(void)
+{
+  gbc_night = gbc_night ? 0 : 1;
+  gbc_settings_save();
+  gbc_hud(gbc_night ? "Night: On" : "Night: Off");
+}
+
+extern "C" void gbc_cycle_dmg_palette(void)
+{
+  int cur = (gbPalette >= 0) ? gbPalette : gbcDmgPalette;
+  int idx = 0;
+  for (int i = 0; i < kCuratedDmgCount; ++i) {
+    if (kCuratedDmg[i] == cur) { idx = (i + 1) % kCuratedDmgCount; break; }
+  }
+  gbcDmgPalette = kCuratedDmg[idx];
+  if (gbPalette >= 0) {
+    gbPalette = gbcDmgPalette;
+    gnuboy_set_palette((gb_palette_t)gbPalette);
+  }
+  gbc_settings_save();
+  char msg[32];
+  snprintf(msg, sizeof(msg), "DMG: %s", gbc_dmg_palette_name());
+  gbc_hud(msg);
 }
 
 extern "C" void gbc_display_init(void)
@@ -316,7 +548,7 @@ extern "C" void gbc_display_start(void)
       "GbcDisp",
       4096,
       nullptr,
-      5,   // below audio (prio 6) so blit never starves sound
+      5,   // below audio feeder (7) and speaker (6)
       &s_task,
       0    // core 0
     );
@@ -346,6 +578,10 @@ extern "C" void gbc_display_stop(void)
     s_lineBuf = nullptr;
     s_lineCap = 0;
   }
+  if (s_prev) { free(s_prev); s_prev = nullptr; }
+  if (s_blend) { free(s_blend); s_blend = nullptr; }
+  s_blendPixels = 0;
+  s_prevValid = false;
 }
 
 

@@ -432,11 +432,21 @@ void gbc_cheats_run_menu(void) {
 
   auto build_options = [&](std::vector<std::string>& opts) {
     opts.clear();
+    char row[64];
+    snprintf(row, sizeof(row), "Scale: %s", gbc_scale_name());
+    opts.push_back(row);
+    snprintf(row, sizeof(row), "Blend: %s", gbc_frame_blend ? "On" : "Off");
+    opts.push_back(row);
+    snprintf(row, sizeof(row), "GBC color: %s", gbc_colour_correct ? "On" : "Off");
+    opts.push_back(row);
+    snprintf(row, sizeof(row), "DMG pal: %s", gbc_dmg_palette_name());
+    opts.push_back(row);
+    snprintf(row, sizeof(row), "Night: %s", gbc_night ? "On" : "Off");
+    opts.push_back(row);
     opts.push_back("Enable all");
     opts.push_back("Disable all");
     opts.push_back("Reload from SD");
     for (int i = 0; i < s_count; ++i) {
-      char row[64];
       snprintf(row, sizeof(row), "%s %s",
                s_cheats[i].enabled ? "[ON]" : "[OFF]",
                s_cheats[i].name);
@@ -448,26 +458,6 @@ void gbc_cheats_run_menu(void) {
   if (s_count == 0) {
     display.topBar("Cheats", true, false);
     display.subMessage("No cheats loaded", 800);
-    std::vector<std::string> emptyOpts = {
-      "Reload from SD",
-      "Back"
-    };
-    VerticalSelector sel(display, input);
-    int choice = sel.select("Cheats", emptyOpts, true, false, {}, {}, false, false);
-    if (choice == 0) {
-      // Reload needs SPI-safe SD
-      gbc_cheats_load();
-      // gbc_cheats_load clears setGameIsSaving — re-assert pause for UI
-      share::setGameIsSaving(true);
-      gbc_display_wait_idle();
-      display.setExternalDisplay(&externalDisplay);
-    }
-    if (s_count == 0) {
-      display.topBar("Cheats", true, false);
-      display.subMessage("Still empty — check SD", 1200);
-      share::setGameIsSaving(false);
-      return;
-    }
   }
 
   VerticalSelector selector(display, input);
@@ -477,13 +467,23 @@ void gbc_cheats_run_menu(void) {
     int choice = selector.select("Cheats", options, true, false, {}, {}, false, false);
     if (choice < 0) break; // ESC / left = back
 
-    const int idxEnableAll  = 0;
-    const int idxDisableAll = 1;
-    const int idxReload     = 2;
-    const int idxFirstCheat = 3;
+    const int idxScale      = 0;
+    const int idxBlend      = 1;
+    const int idxColour     = 2;
+    const int idxPalette    = 3;
+    const int idxNight      = 4;
+    const int idxEnableAll  = 5;
+    const int idxDisableAll = 6;
+    const int idxReload     = 7;
+    const int idxFirstCheat = 8;
     const int idxBack       = idxFirstCheat + s_count;
 
     if (choice == idxBack) break;
+    if (choice == idxScale) { gbc_toggle_scale_mode(); continue; }
+    if (choice == idxBlend) { gbc_toggle_frame_blend(); continue; }
+    if (choice == idxColour) { gbc_toggle_colour_correct(); continue; }
+    if (choice == idxPalette) { gbc_cycle_dmg_palette(); continue; }
+    if (choice == idxNight) { gbc_toggle_night(); continue; }
     if (choice == idxEnableAll) {
       gbc_cheats_enable_all(true);
       continue;
