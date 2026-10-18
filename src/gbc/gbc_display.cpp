@@ -2,9 +2,11 @@
 
 #include <Arduino.h>
 #include <M5Cardputer.h>
+#include <string.h>
 #include "esp_heap_caps.h"
 extern "C" {
   #include "gnuboy/gnuboy.h"
+  #include "gnuboy/lcd.h"
 #include "share/emu_log_cpp.h"
 }
 
@@ -28,8 +30,15 @@ typedef struct {
 static QueueHandle_t s_frameQ  = nullptr;
 static TaskHandle_t  s_task    = nullptr;
 static volatile bool s_displayBusBusy = false;
-static uint16_t     *s_lineBuf = nullptr;
-static int           s_lineCap = 0;
+static uint16_t     *s_dmaBuf[2] = {nullptr, nullptr};
+static int           s_dmaCap = 0;
+static bool          s_dmaOk = false;
+static uint16_t     *s_prev = nullptr;
+static uint16_t     *s_snap = nullptr;
+static int           s_holdPixels = 0;
+static bool          s_forceFull = true;
+static int           s_lastFps = -2;
+static int           s_lastFpsOn = -1;
 
 static constexpr int kMaxDstW = 320;
 static constexpr int kMaxDstH = 240;
@@ -58,27 +67,16 @@ static bool s_nightMode = true; // orange night-mode warm filter; default ON
 extern "C" volatile int gbc_fps_overlay = 1;
 extern "C" volatile int gbc_fps_value = -1;
 
-static inline uint16_t gbc_warm_rgb565(uint16_t c)
-{
-  // RGB565: RRRRR GGGGGG BBBBB — lift R, attenuate G/B toward orange
-  uint16_t r = (c >> 11) & 0x1F;
-  uint16_t g = (c >> 5)  & 0x3F;
-  uint16_t b =  c        & 0x1F;
-  uint16_t r2 = r + (r >> 3);
-  if (r2 > 31) r2 = 31;
-  uint16_t g2 = (uint16_t)((g * 55) / 64);
-  uint16_t b2 = (uint16_t)((b * 40) / 64);
-  return (uint16_t)((r2 << 11) | (g2 << 5) | b2);
-}
-
 extern "C" void gbc_display_set_night_mode(int on)
 {
   s_nightMode = (on != 0);
+  gb_lcd_pal_dirty();
 }
 
 extern "C" void gbc_display_toggle_night_mode(void)
 {
   s_nightMode = !s_nightMode;
+  gb_lcd_pal_dirty();
 }
 
 extern "C" int gbc_display_night_mode(void)
@@ -178,6 +176,7 @@ static void gbc_display_transform(int srcW, int srcH)
 
   // Clear bars whenever the transform changes (letterbox / pillarbox).
   externalDisplay.fillScreen(TFT_BLACK);
+  s_forceFull = true;
 
   s_lastZoomPercent = zoom;
   s_lastFullScreen  = full;
@@ -310,30 +309,7 @@ static void gbc_display_task(void *arg)
       continue;
     }
 
-    // Always use small DMA line batches — never a full-frame SPIRAM/DMA buffer.
-    const int batchLines = kBatchLines;
-    const int need = dstW * batchLines;
-
-    if (need > s_lineCap) {
-      if (s_lineBuf) {
-        free(s_lineBuf);
-        s_lineBuf = nullptr;
-        s_lineCap = 0;
-      }
-      s_lineBuf = (uint16_t*)heap_caps_malloc(
-          (size_t)need * sizeof(uint16_t),
-          MALLOC_CAP_DMA | MALLOC_CAP_8BIT
-      );
-      if (!s_lineBuf) {
-        s_lineBuf = (uint16_t*)heap_caps_malloc(
-            (size_t)need * sizeof(uint16_t),
-            MALLOC_CAP_8BIT
-        );
-      }
-      s_lineCap = s_lineBuf ? need : 0;
-    }
-
-    if (!s_lineBuf || s_lineCap < need) {
+    if (srcH > 144 || srcW <= 0 || srcW > 256) {
       continue;
     }
 
@@ -342,34 +318,133 @@ static void gbc_display_task(void *arg)
       continue;
     }
 
+    const int pixels = srcW * srcH;
+    if (s_holdPixels != pixels || !s_prev || !s_snap) {
+      if (s_prev) { free(s_prev); s_prev = nullptr; }
+      if (s_snap) { free(s_snap); s_snap = nullptr; }
+      s_holdPixels = 0;
+      size_t bytes = (size_t)pixels * sizeof(uint16_t);
+      s_prev = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      s_snap = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!s_prev) s_prev = (uint16_t*)malloc(bytes);
+      if (!s_snap) s_snap = (uint16_t*)malloc(bytes);
+      if (!s_prev || !s_snap) {
+        if (s_prev) { free(s_prev); s_prev = nullptr; }
+        if (s_snap) { free(s_snap); s_snap = nullptr; }
+        continue;
+      }
+      s_holdPixels = pixels;
+      s_forceFull = true;
+    }
+
+    for (int sy = 0; sy < srcH; ++sy) {
+      memcpy(s_snap + sy * srcW, msg.fb + sy * pitch, (size_t)srcW * sizeof(uint16_t));
+    }
+
+    uint8_t srcDirty[144];
+    if (s_forceFull) {
+      memset(srcDirty, 1, (size_t)srcH);
+    } else {
+      for (int sy = 0; sy < srcH; ++sy) {
+        srcDirty[sy] = memcmp(s_snap + sy * srcW, s_prev + sy * srcW,
+                              (size_t)srcW * sizeof(uint16_t)) != 0;
+      }
+    }
+
+    const bool fpsDirty = (gbc_fps_overlay != s_lastFpsOn) ||
+                          (gbc_fps_overlay && gbc_fps_value != s_lastFps);
+    uint8_t rowDirty[kMaxDstH];
+    int dirtyRows = 0;
+    for (int y = 0; y < dstH; ++y) {
+      int sy = (int)s_yMap[y];
+      if (sy < 0) sy = 0;
+      if (sy >= srcH) sy = srcH - 1;
+      uint8_t d = (uint8_t)(srcDirty[sy] || (fpsDirty && y < 7));
+      rowDirty[y] = d;
+      dirtyRows += d;
+    }
+    if (dirtyRows == 0) {
+      memcpy(s_prev, s_snap, (size_t)pixels * sizeof(uint16_t));
+      s_forceFull = false;
+      s_lastFps = gbc_fps_value;
+      s_lastFpsOn = gbc_fps_overlay;
+      continue;
+    }
+
+    const int need = dstW * kBatchLines;
+    if (s_dmaCap < need || !s_dmaBuf[0] || !s_dmaBuf[1]) {
+      if (s_dmaBuf[0]) { free(s_dmaBuf[0]); s_dmaBuf[0] = nullptr; }
+      if (s_dmaBuf[1]) { free(s_dmaBuf[1]); s_dmaBuf[1] = nullptr; }
+      s_dmaCap = 0;
+      s_dmaOk = false;
+      size_t bytes = (size_t)need * sizeof(uint16_t);
+      s_dmaBuf[0] = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+      s_dmaBuf[1] = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+      s_dmaOk = s_dmaBuf[0] && s_dmaBuf[1];
+      if (!s_dmaOk) {
+        if (s_dmaBuf[0]) { free(s_dmaBuf[0]); s_dmaBuf[0] = nullptr; }
+        if (s_dmaBuf[1]) { free(s_dmaBuf[1]); s_dmaBuf[1] = nullptr; }
+        s_dmaBuf[0] = (uint16_t*)malloc(bytes);
+        s_dmaBuf[1] = s_dmaBuf[0] ? (uint16_t*)malloc(bytes) : nullptr;
+        s_dmaOk = false;
+      }
+      if (!s_dmaBuf[0] || !s_dmaBuf[1]) {
+        continue;
+      }
+      s_dmaCap = need;
+    }
+
+    if (share::gameIsSaving()) {
+      continue;
+    }
+
     s_displayBusBusy = true;
     externalDisplay.startWrite();
 
-    for (int y0 = 0; y0 < dstH; y0 += batchLines) {
-      const int rows = (y0 + batchLines <= dstH) ? batchLines : (dstH - y0);
-      for (int row = 0; row < rows; ++row) {
-        const int y = y0 + row;
-        const uint16_t *srcLine = msg.fb + (int)s_yMap[y] * pitch;
-        uint16_t *dstLine = s_lineBuf + row * dstW;
-        if (s_nightMode) {
-          for (int x = 0; x < dstW; ++x) {
-            dstLine[x] = gbc_warm_rgb565(srcLine[s_xMap[x]]);
-          }
-        } else {
-          for (int x = 0; x < dstW; ++x) {
-            dstLine[x] = srcLine[s_xMap[x]];
-          }
-        }
-        if (gbc_fps_overlay && y < 7) stamp_fps(dstLine, dstW, y);
-      }
-      externalDisplay.setAddrWindow(xOffset, yOffset + y0, dstW, rows);
-      externalDisplay.writePixels(s_lineBuf, dstW * rows);
-      // No taskYIELD() inside startWrite — SaveTask must not grab SPI3 mid-frame.
-    }
+    int phase = 0;
+    bool inflight = false;
+    for (int y = 0; y < dstH; ) {
+      while (y < dstH && !rowDirty[y]) ++y;
+      if (y >= dstH) break;
+      int rows = 1;
+      while (y + rows < dstH && rowDirty[y + rows] && rows < kBatchLines) ++rows;
 
+      uint16_t* buf = s_dmaBuf[phase];
+      for (int row = 0; row < rows; ++row) {
+        const int yy = y + row;
+        int sy = (int)s_yMap[yy];
+        if (sy < 0) sy = 0;
+        if (sy >= srcH) sy = srcH - 1;
+        const uint16_t* srcLine = s_snap + sy * srcW;
+        uint16_t* dstLine = buf + row * dstW;
+        for (int x = 0; x < dstW; ++x) {
+          uint16_t p = srcLine[s_xMap[x]];
+          dstLine[x] = (uint16_t)((p << 8) | (p >> 8));
+        }
+        if (gbc_fps_overlay && yy < 7) stamp_fps(dstLine, dstW, yy);
+      }
+
+      if (inflight) externalDisplay.waitDMA();
+      externalDisplay.setAddrWindow(xOffset, yOffset + y, dstW, rows);
+      if (s_dmaOk) {
+        externalDisplay.writePixelsDMA(buf, dstW * rows, false);
+        inflight = true;
+      } else {
+        externalDisplay.writePixels(buf, dstW * rows, false);
+        inflight = false;
+      }
+      phase ^= 1;
+      y += rows;
+    }
+    if (inflight) externalDisplay.waitDMA();
     externalDisplay.endWrite();
     s_displayBusBusy = false;
-    taskYIELD(); // OK after releasing the bus
+
+    memcpy(s_prev, s_snap, (size_t)pixels * sizeof(uint16_t));
+    s_forceFull = false;
+    s_lastFps = gbc_fps_value;
+    s_lastFpsOn = gbc_fps_overlay;
+    taskYIELD();
   }
 }
 
@@ -423,11 +498,12 @@ extern "C" void gbc_display_stop(void)
     vQueueDelete(s_frameQ);
     s_frameQ = nullptr;
   }
-  if (s_lineBuf) {
-    free(s_lineBuf);
-    s_lineBuf = nullptr;
-    s_lineCap = 0;
-  }
+  if (s_dmaBuf[0]) { free(s_dmaBuf[0]); s_dmaBuf[0] = nullptr; }
+  if (s_dmaBuf[1]) { free(s_dmaBuf[1]); s_dmaBuf[1] = nullptr; }
+  s_dmaCap = 0;
+  if (s_prev) { free(s_prev); s_prev = nullptr; }
+  if (s_snap) { free(s_snap); s_snap = nullptr; }
+  s_holdPixels = 0;
 }
 
 
