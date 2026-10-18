@@ -57,11 +57,18 @@ namespace share
             prefs.begin("cardputer_emu", false);  // RW
             prefs.putBool("quit_game", true);
             prefs.end();
-            
+
+            // Wait out any in-flight SD write, then force a final SRAM flush.
+            // Previously we only waited — dirty in-game saves never hit .sav before
+            // restart, so reopen rolled back to the last autosave (Dirt report).
             while (gameIsSaving()) {
-                delay(1); // wait for save to finish
+                delay(1);
             }
-            
+            gameSaveFlushForQuit();
+            while (gameIsSaving()) {
+                delay(1);
+            }
+
             esp_restart();
         }
 

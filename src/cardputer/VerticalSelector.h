@@ -12,7 +12,7 @@
 class VerticalSelector {
 public:
     VerticalSelector(CardputerView& display, CardputerInput& input);
-    int select(const std::string& title, const std::vector<std::string>& options, bool subMenu = false, bool searchBar = false,  const std::vector<std::string>& options2={},  const std::vector<std::string>& shortcuts={}, bool visibleMention=false, bool handleInactivity=true);
+    int select(const std::string& title, const std::vector<std::string>& options, bool subMenu = false, bool searchBar = false,  const std::vector<std::string>& options2={},  const std::vector<std::string>& shortcuts={}, bool visibleMention=false, bool handleInactivity=true, int initialIndex=0);
 
 private:
     CardputerView& display;
