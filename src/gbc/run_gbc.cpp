@@ -135,14 +135,16 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
 
         // Cheat menu pauses emu (no gnuboy_run while open)
         if (gbc_cheats_menu_requested()) {
+            /* Persist any pending in-game SRAM before a long pause. */
+            gbc_save_force_flush();
             gbc_cheats_run_menu();
             next_frame_us = esp_timer_get_time();
             continue;
         }
 
-        // 1/2 frame skip
-        bool doDraw = drawFrame && ((frameCount & 1) == 0);
-        gnuboy_run(doDraw);   // trigger callbacks video/audio
+        // Always emulate. drawFrame only skips the LCD callback, and only
+        // after the loop has fallen more than one frame behind.
+        gnuboy_run(drawFrame);
 
         gbc_cheats_apply();
 
@@ -158,6 +160,10 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
         uint32_t nowMs = millis();
         if (nowMs - lastFpsMs >= 1000) {
             float fps = (frameCount * 1000.0f) / (nowMs - lastFpsMs);
+            int shown = (int)(fps + 0.5f);
+            if (shown < 0) shown = 0;
+            if (shown > 999) shown = 999;
+            gbc_fps_value = shown;
             EMU_LOG("[GBC] FPS: %.2f | HEAP %u\n", fps, esp_get_free_heap_size());
             frameCount = 0;
             lastFpsMs  = nowMs;
@@ -168,17 +174,15 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
         int64_t now = (int64_t)esp_timer_get_time();
         int64_t lateness = now - (int64_t)next_frame_us;
 
-        if (lateness > 0) {
-            // We are late, skip drawing the next frame
+        if (lateness > (int64_t)frame_us) {
+            // More than one frame late: skip the next LCD push only.
             drawFrame = false;
-
-            // realign the timeline to avoid infinite accumulation
-            if (lateness > (int64_t)frame_us) {
+            if (lateness > (int64_t)frame_us * 4) {
                 next_frame_us = (uint64_t)now;
             }
-
-            continue;
-
+        } else if (lateness > 0) {
+            // Behind, but under one frame: keep drawing, do not sleep.
+            drawFrame = true;
         } else {
             drawFrame = true;
             share::sleep_until_us(next_frame_us);

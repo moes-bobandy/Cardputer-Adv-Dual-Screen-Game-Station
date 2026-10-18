@@ -1,6 +1,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <stdio.h>
 #include "gnuboy.h"
 #include "hw.h"
 #include "cpu.h"
@@ -531,10 +534,135 @@ void gnuboy_set_palette(gb_palette_t pal)
 	gb_lcd_pal_dirty();
 }
 
-
 bool gnuboy_sram_dirty(void)
 {
 	return cart.sram_dirty != 0;
+}
+
+int gnuboy_sram_image_bytes(void)
+{
+	if (!cart.has_battery || cart.ramsize <= 0)
+		return 0;
+	return cart.ramsize * 8192;
+}
+
+static unsigned sram_bank_mask(void)
+{
+	if (cart.ramsize <= 0)
+		return 0;
+	if (cart.ramsize >= 31)
+		return 0xFFFFFFFFu;
+	return (1u << cart.ramsize) - 1u;
+}
+
+static int sram_fsync_file(FILE *f)
+{
+	if (!f)
+		return -1;
+	if (fflush(f) != 0)
+		return -1;
+	int fd = fileno(f);
+	if (fd < 0 || fsync(fd) != 0)
+		return -1;
+	return 0;
+}
+
+static int sram_write_all(FILE *f, const void *buf, size_t n)
+{
+	const uint8_t *p = (const uint8_t *)buf;
+	size_t off = 0;
+	while (off < n)
+	{
+		size_t w = fwrite(p + off, 1, n - off, f);
+		if (w == 0)
+			return -1;
+		off += w;
+	}
+	return 0;
+}
+
+/* Byte-copy + fsync. Does not rename or unlink the source. */
+static int sram_copy_fsync(const char *src, const char *dst)
+{
+	FILE *in = fopen(src, "rb");
+	if (!in)
+		return -1;
+	FILE *out = fopen(dst, "wb");
+	if (!out)
+	{
+		fclose(in);
+		return -1;
+	}
+	uint8_t buf[1024];
+	int rc = 0;
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+	{
+		if (sram_write_all(out, buf, n) != 0)
+		{
+			rc = -1;
+			break;
+		}
+	}
+	if (ferror(in))
+		rc = -1;
+	if (rc == 0 && sram_fsync_file(out) != 0)
+		rc = -1;
+	fclose(out);
+	fclose(in);
+	return rc;
+}
+
+static void sram_fsync_parent(const char *file)
+{
+	char dir[512];
+	size_t len;
+	char *slash;
+	int fd;
+
+	if (!file)
+		return;
+	len = strlen(file);
+	if (len == 0 || len >= sizeof(dir))
+		return;
+	memcpy(dir, file, len + 1);
+	slash = strrchr(dir, '/');
+	if (!slash || slash == dir)
+		return;
+	*slash = '\0';
+	fd = open(dir, O_RDONLY);
+	if (fd >= 0)
+	{
+		fsync(fd);
+		close(fd);
+	}
+}
+
+static int sram_write_rtc(FILE *f)
+{
+	uint64_t rt;
+	uint32_t *rtp;
+	uint32_t rtc_buf[12];
+
+	if (!cart.has_rtc)
+		return 0;
+	rt = RTC_BASE + cart.rtc.s + (cart.rtc.m * 60) + (cart.rtc.h * 3600) + (cart.rtc.d * 86400);
+	rtp = (uint32_t *)&rt;
+	rtc_buf[0] = cart.rtc.s;
+	rtc_buf[1] = cart.rtc.m;
+	rtc_buf[2] = cart.rtc.h;
+	rtc_buf[3] = cart.rtc.d;
+	rtc_buf[4] = cart.rtc.flags;
+	rtc_buf[5] = cart.rtc.regs[0];
+	rtc_buf[6] = cart.rtc.regs[1];
+	rtc_buf[7] = cart.rtc.regs[2];
+	rtc_buf[8] = cart.rtc.regs[3];
+	rtc_buf[9] = cart.rtc.regs[4];
+	rtc_buf[10] = rtp[0];
+	rtc_buf[11] = rtp[1];
+	if (fseek(f, cart.ramsize * 8192, SEEK_SET) != 0)
+		return -1;
+	return sram_write_all(f, rtc_buf, sizeof(rtc_buf));
 }
 
 
@@ -557,7 +685,10 @@ int gnuboy_load_sram(const char *file)
 		if (fseek(f, i * 8192, SEEK_SET) == 0 && fread(cart.rambanks[i], 8192, 1, f) == 1)
 		{
 			MESSAGE_INFO("Loaded SRAM bank %d.\n", i);
-			cart.sram_saved = (1 << i);
+			/* Must OR — assignment kept only the last bank and made later
+			 * saves treat every earlier bank as already stored. */
+			if (i < 31)
+				cart.sram_saved |= (1u << i);
 		}
 	}
 
@@ -588,133 +719,150 @@ int gnuboy_load_sram(const char *file)
 /**
  * If quick_save is set to true, sram_save will only save the sectors that
  * changed + the rtc (must open existing file with r+b — never truncate).
- * If set to false then a full sram file is created (temp + rename when possible).
+ * If set to false then a full sram file is created.
+ *
+ * Full saves are staged to <file>.tmp, fsynced, copied onto <file> in place,
+ * then fsynced again. The live .sav is never renamed away first: on FAT that
+ * left only .sav.bak (the previous snapshot) when esp_restart raced the
+ * tmp→sav rename, so every later load resumed the same place.
+ * Returns 0 when the committed image matches SRAM. Returns -4 when the file
+ * was committed but SRAM changed during the snapshot (dirty stays set).
  */
 int gnuboy_save_sram(const char *file, bool quick_save)
 {
-	if (!cart.has_battery || !cart.ramsize || !file || !*file)
+	if (!cart.has_battery || !cart.ramsize || !cart.rambanks || !file || !*file)
 		return -1;
 
 	FILE *f = NULL;
 	char tmp_path[512];
 	char bak_path[512];
-	int use_tmp = 0;
-	bool do_full = !quick_save;
+	int stable = 0;
+	uint32_t gen_snap = 0;
+	size_t nbytes = (size_t)cart.ramsize * 8192;
+	uint8_t *snap = NULL;
+	unsigned banks_written = 0;
 
-	if (quick_save) {
-		/* Never "wb" for a partial update — that truncates and zeros other banks. */
+	if (quick_save)
+	{
 		f = fopen(file, "r+b");
-		if (!f) {
-			/* No existing save: fall through to a full create. */
-			do_full = true;
+		if (!f)
+			quick_save = false;
+	}
+
+	if (quick_save)
+	{
+		MESSAGE_INFO("Saving SRAM to '%s' (quick)\n", file);
+		for (int i = 0; i < cart.ramsize; i++)
+		{
+			if (!(cart.sram_saved & (1u << i)) || (cart.sram_dirty & (1u << i)))
+			{
+				if (fseek(f, i * 8192, SEEK_SET) == 0 &&
+					fwrite(cart.rambanks[i], 8192, 1, f) == 1)
+				{
+					banks_written |= (1u << i);
+					cart.sram_dirty &= ~(1u << i);
+					cart.sram_saved |= (1u << i);
+				}
+			}
+		}
+		if (sram_write_rtc(f) != 0)
+		{
+			fclose(f);
+			return -2;
+		}
+		if (sram_fsync_file(f) != 0)
+		{
+			fclose(f);
+			return -2;
+		}
+		fclose(f);
+		sram_fsync_parent(file);
+		return cart.sram_dirty ? -1 : 0;
+	}
+
+	snap = (uint8_t *)malloc(nbytes);
+	if (!snap)
+		return -2;
+
+	/* Retry the copy if the game writes SRAM mid-snapshot (in-game save). */
+	for (int attempt = 0; attempt < 3; attempt++)
+	{
+		uint32_t g0 = gnuboy_sram_write_gen();
+		for (int i = 0; i < cart.ramsize; i++)
+			memcpy(snap + (size_t)i * 8192, cart.rambanks[i], 8192);
+		uint32_t g1 = gnuboy_sram_write_gen();
+		gen_snap = g0;
+		if (g0 == g1)
+		{
+			stable = 1;
+			break;
 		}
 	}
 
-	if (do_full) {
-		cart.sram_dirty = (1 << cart.ramsize) - 1;
-		cart.sram_saved = 0;
-
-		if (f) {
-			fclose(f);
-			f = NULL;
-		}
-
-		/* Full saves are always staged in a temp file for atomic replacement. */
-		if ((size_t)snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", file) >= sizeof(tmp_path))
-			return -2;
-		f = fopen(tmp_path, "wb");
-		if (!f)
-			return -2;
-		use_tmp = 1;
-	} else if (!f) {
+	if ((size_t)snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", file) >= sizeof(tmp_path))
+	{
+		free(snap);
 		return -2;
 	}
 
-	MESSAGE_INFO("Saving SRAM to '%s'%s...\n", file, do_full ? " (full)" : " (quick)");
-
-	/* Full-save bank snapshot: heap so SaveTask (8K stack) is not blown. */
-	uint8_t *bank_copy = NULL;
-	if (do_full) {
-		bank_copy = (uint8_t *)malloc(8192);
-	}
-
-	for (int i = 0; i < cart.ramsize; i++)
+	f = fopen(tmp_path, "wb");
+	if (!f)
 	{
-		if (!(cart.sram_saved & (1 << i)) || (cart.sram_dirty & (1 << i)))
-		{
-			int ok = 0;
-			if (do_full && bank_copy) {
-				/* Snapshot bank so emu (prio 19) tearing is reduced while we fwrite. */
-				memcpy(bank_copy, cart.rambanks[i], 8192);
-				if (fseek(f, i * 8192, SEEK_SET) == 0 && fwrite(bank_copy, 8192, 1, f) == 1)
-					ok = 1;
-			} else {
-				if (fseek(f, i * 8192, SEEK_SET) == 0 && fwrite(cart.rambanks[i], 8192, 1, f) == 1)
-					ok = 1;
-			}
-			if (ok)
-			{
-				MESSAGE_INFO("Saved SRAM bank %d.\n", i);
-				/* Only clear dirty / mark saved after this bank's write succeeds. */
-				cart.sram_dirty &= ~(1 << i);
-				cart.sram_saved |= (1 << i);
-			}
-		}
+		free(snap);
+		return -2;
 	}
 
-	if (bank_copy) {
-		free(bank_copy);
-		bank_copy = NULL;
-	}
+	MESSAGE_INFO("Saving SRAM to '%s' (full)\n", file);
 
-	if (cart.has_rtc)
+	if (sram_write_all(f, snap, nbytes) != 0 || sram_write_rtc(f) != 0 || sram_fsync_file(f) != 0)
 	{
-		uint64_t rt = RTC_BASE + cart.rtc.s + (cart.rtc.m * 60) + (cart.rtc.h * 3600) + (cart.rtc.d * 86400);
-		uint32_t *rtp = (uint32_t*)&rt;
-		uint32_t rtc_buf[12] = {
-			cart.rtc.s,
-			cart.rtc.m,
-			cart.rtc.h,
-			cart.rtc.d,
-			cart.rtc.flags,
-			cart.rtc.regs[0],
-			cart.rtc.regs[1],
-			cart.rtc.regs[2],
-			cart.rtc.regs[3],
-			cart.rtc.regs[4],
-			rtp[0],
-			rtp[1],
-		};
-		if (fseek(f, cart.ramsize * 8192, SEEK_SET) == 0 && fwrite(&rtc_buf, 48, 1, f) == 1)
-		{
-			MESSAGE_INFO("Saved RTC section.\n");
-		}
+		fclose(f);
+		free(snap);
+		return -2;
 	}
-
-	fflush(f);
 	fclose(f);
+	free(snap);
+	snap = NULL;
 
-	if (use_tmp) {
-		/* Keep the last known-good save before replacing it. */
-		if (access(file, F_OK) == 0 &&
-			(size_t)snprintf(bak_path, sizeof(bak_path), "%s.bak", file) < sizeof(bak_path)) {
-			unlink(bak_path);
-			if (rename(file, bak_path) != 0)
-				MESSAGE_WARN("SRAM backup %s could not be created\n", bak_path);
-		}
+	/* Previous image stays intact until the new .sav is itself durable.
+	 * Copy, do not rename: rename+unlink dropped the canonical file. */
+	if (access(file, F_OK) == 0 &&
+		(size_t)snprintf(bak_path, sizeof(bak_path), "%s.bak", file) < sizeof(bak_path))
+	{
+		if (sram_copy_fsync(file, bak_path) != 0)
+			MESSAGE_WARN("SRAM backup %s could not be created\n", bak_path);
+	}
 
-		/* FAT often requires unlink of destination before rename. */
-		unlink(file);
-		if (rename(tmp_path, file) != 0) {
-			/* Fallback: leave .tmp and report failure so caller can retry. */
-			MESSAGE_ERROR("SRAM rename '%s' -> '%s' failed\n", tmp_path, file);
+	if (sram_copy_fsync(tmp_path, file) != 0)
+	{
+		MESSAGE_ERROR("SRAM install '%s' -> '%s' failed (tmp kept)\n", tmp_path, file);
+		sram_fsync_parent(tmp_path);
+		return -3;
+	}
+
+	{
+		struct stat st;
+		if (stat(file, &st) != 0 || (size_t)st.st_size < nbytes)
+		{
+			MESSAGE_ERROR("SRAM '%s' size check failed after install\n", file);
 			return -3;
 		}
 	}
 
-	return cart.sram_dirty ? -1 : 0;
-}
+	unlink(tmp_path);
+	sram_fsync_parent(file);
 
+	if (stable && gnuboy_sram_write_gen() == gen_snap)
+	{
+		cart.sram_dirty = 0;
+		cart.sram_saved = sram_bank_mask();
+		return 0;
+	}
+
+	/* File is durable, but bytes moved during the snapshot. Caller must retry. */
+	cart.sram_dirty |= sram_bank_mask();
+	return -4;
+}
 
 
 /**

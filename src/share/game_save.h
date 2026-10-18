@@ -20,7 +20,7 @@ namespace share
         char* dst, size_t dstLen,
         const char* saveDir,          // "/sd/gbc_saves", "/sd/sms_saves", ...
         const char* romPathOrName,
-        const char* defaultName 
+        const char* defaultName
     );
 
     bool gameSaveEnsureParentReady(const char* baseDir);
@@ -28,4 +28,9 @@ namespace share
     uint32_t gameSaveCrc32Update(uint32_t crc, const uint8_t* buf, size_t len);
 
     void setGameIsSaving(bool isSaving);
+
+    /** Optional per-core hook: flush battery SRAM to SD before GO→restart. */
+    using GameSaveQuitFlushFn = void (*)();
+    void gameSaveSetQuitFlush(GameSaveQuitFlushFn fn);
+    void gameSaveFlushForQuit();
 } // namespace share

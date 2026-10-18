@@ -10,6 +10,7 @@ extern "C" {
 
 #include "../cardputer/CardputerView.h"
 #include "share/game_save.h"
+#include "gbc_sound.h"
 
 extern LGFX_ILI9341 externalDisplay;
 
@@ -52,6 +53,96 @@ static int  s_lastSrcW        = 0;
 static int  s_lastSrcH        = 0;
 static int  s_lastLcdW        = 0;
 static int  s_lastLcdH        = 0;
+
+static bool s_nightMode = true; // orange night-mode warm filter; default ON
+
+extern "C" volatile int gbc_fps_overlay = 1;
+extern "C" volatile int gbc_fps_value = -1;
+
+static inline uint16_t gbc_warm_rgb565(uint16_t c)
+{
+  // RGB565: RRRRR GGGGGG BBBBB — lift R, attenuate G/B toward orange
+  uint16_t r = (c >> 11) & 0x1F;
+  uint16_t g = (c >> 5)  & 0x3F;
+  uint16_t b =  c        & 0x1F;
+  uint16_t r2 = r + (r >> 3);
+  if (r2 > 31) r2 = 31;
+  uint16_t g2 = (uint16_t)((g * 55) / 64);
+  uint16_t b2 = (uint16_t)((b * 40) / 64);
+  return (uint16_t)((r2 << 11) | (g2 << 5) | b2);
+}
+
+extern "C" void gbc_display_set_night_mode(int on)
+{
+  s_nightMode = (on != 0);
+}
+
+extern "C" void gbc_display_toggle_night_mode(void)
+{
+  s_nightMode = !s_nightMode;
+}
+
+extern "C" int gbc_display_night_mode(void)
+{
+  return s_nightMode ? 1 : 0;
+}
+
+extern "C" void gbc_fps_toggle(void)
+{
+  gbc_fps_overlay = gbc_fps_overlay ? 0 : 1;
+}
+
+// 3x5 digits. Stamped into the existing line buffer (no extra SPI transaction).
+static const uint8_t kFpsGlyph[10][5] = {
+  {0x7,0x5,0x5,0x5,0x7},
+  {0x2,0x6,0x2,0x2,0x7},
+  {0x7,0x1,0x7,0x4,0x7},
+  {0x7,0x1,0x7,0x1,0x7},
+  {0x5,0x5,0x7,0x1,0x1},
+  {0x7,0x4,0x7,0x1,0x7},
+  {0x7,0x4,0x7,0x5,0x7},
+  {0x7,0x1,0x1,0x1,0x1},
+  {0x7,0x5,0x7,0x5,0x7},
+  {0x7,0x5,0x7,0x1,0x7},
+};
+
+static const uint8_t kGlyphF[5] = {0x7,0x4,0x6,0x4,0x4};
+static const uint8_t kGlyphU[5] = {0x5,0x5,0x5,0x5,0x7};
+
+static int paint_bits(uint16_t* line, int dstW, int x0, uint8_t bits)
+{
+  for (int b = 0; b < 3; ++b) {
+    int x = x0 + b;
+    if ((unsigned)x < (unsigned)dstW && (bits & (4 >> b))) line[x] = 0xFFFF;
+  }
+  return x0 + 4;
+}
+
+static void stamp_fps(uint16_t* line, int dstW, int y)
+{
+  if (y < 0 || y > 6 || dstW <= 0) return;
+  int v = gbc_fps_value;
+  if (v < 0) return;
+  if (v > 999) v = 999;
+  int u = gbc_audio_underrun_count();
+  if (u < 0) u = 0;
+  if (u > 999) u = 999;
+  int nf = (v >= 100) ? 3 : (v >= 10) ? 2 : 1;
+  int nu = (u >= 100) ? 3 : (u >= 10) ? 2 : 1;
+  int boxW = 4 * (1 + nf + 1 + 1 + nu) + 1;
+  if (boxW > dstW) boxW = dstW;
+  for (int x = 0; x < boxW; ++x) line[x] = 0x0000;
+  if (y < 1 || y > 5) return;
+  int gy = y - 1;
+  int x0 = 1;
+  x0 = paint_bits(line, dstW, x0, kGlyphF[gy]);
+  int fd[3] = { v / 100, (v / 10) % 10, v % 10 };
+  for (int d = 3 - nf; d < 3; ++d) x0 = paint_bits(line, dstW, x0, kFpsGlyph[fd[d]][gy]);
+  x0 += 4;
+  x0 = paint_bits(line, dstW, x0, kGlyphU[gy]);
+  int ud[3] = { u / 100, (u / 10) % 10, u % 10 };
+  for (int d = 3 - nu; d < 3; ++d) x0 = paint_bits(line, dstW, x0, kFpsGlyph[ud[d]][gy]);
+}
 
 static inline int clampi(int v, int lo, int hi)
 {
@@ -276,9 +367,16 @@ static void gbc_display_task(void *arg)
         const int y = y0 + row;
         const uint16_t *srcLine = msg.fb + (int)s_yMap[y] * pitch;
         uint16_t *dstLine = s_lineBuf + row * dstW;
-        for (int x = 0; x < dstW; ++x) {
-          dstLine[x] = srcLine[s_xMap[x]];
+        if (s_nightMode) {
+          for (int x = 0; x < dstW; ++x) {
+            dstLine[x] = gbc_warm_rgb565(srcLine[s_xMap[x]]);
+          }
+        } else {
+          for (int x = 0; x < dstW; ++x) {
+            dstLine[x] = srcLine[s_xMap[x]];
+          }
         }
+        if (gbc_fps_overlay && y < 7) stamp_fps(dstLine, dstW, y);
       }
       externalDisplay.setAddrWindow(xOffset, yOffset + y0, dstW, rows);
       externalDisplay.writePixels(s_lineBuf, dstW * rows);

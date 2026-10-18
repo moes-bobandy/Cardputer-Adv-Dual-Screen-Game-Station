@@ -26,6 +26,16 @@ void gbc_display_submit_frame(const uint16_t *fb,
                               int width,
                               int height);
 
+/* Orange night-mode warm RGB565 filter on EXTERNAL ILI9341 blit (default ON). */
+void gbc_display_set_night_mode(int on);
+void gbc_display_toggle_night_mode(void);
+int  gbc_display_night_mode(void);
+
+/* Test-build FPS overlay. Value is emulated frames/sec, -1 until the first sample. */
+extern volatile int gbc_fps_overlay;
+extern volatile int gbc_fps_value;
+void gbc_fps_toggle(void);
+
 #ifdef __cplusplus
 }
 #endif
