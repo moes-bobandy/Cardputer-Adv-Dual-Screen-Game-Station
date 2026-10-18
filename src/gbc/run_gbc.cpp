@@ -1,6 +1,7 @@
 #include <Arduino.h>
 extern "C" {
   #include "gnuboy/gnuboy.h"
+  #include "gnuboy/lcd.h"
 }
 
 #include "gbc_display.h"
@@ -13,15 +14,19 @@ extern "C" {
 #include "share/emu_log_cpp.h"
 
 static uint16_t* s_gbFramebuf = nullptr;
+static uint16_t* s_fb[2] = {nullptr, nullptr};
 static int16_t* s_audioBuf = nullptr;
 extern int gbc_sampleRate;
 
 // callback video GNUBOY
 static void gbc_video_callback(void *buffer)
 {
-    // buffer == s_gbFramebuf
-    (void)buffer;
-    gbc_display_submit_frame(s_gbFramebuf, GB_WIDTH, GB_WIDTH, GB_HEIGHT);
+    uint16_t* shown = (uint16_t*)buffer;
+    gbc_display_submit_frame(shown, GB_WIDTH, GB_WIDTH, GB_HEIGHT);
+    if (s_fb[0] && s_fb[1]) {
+        uint16_t* next = (shown == s_fb[0]) ? s_fb[1] : s_fb[0];
+        gnuboy_set_framebuffer(next);
+    }
 }
 
 // callback audio GNUBOY
@@ -33,17 +38,20 @@ void gbc_audio_callback(void *buffer, size_t length)
 }
 
 void gbc_allocate_buffers() {
-    // framebuffer GNUBOY
     size_t fbSize = GB_WIDTH * GB_HEIGHT * sizeof(uint16_t);
-    s_gbFramebuf = (uint16_t*)heap_caps_malloc(
-        fbSize,
-        MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL
-    );
-    if (!s_gbFramebuf) {
-        EMU_LOG("[GBC] FATAL: framebuffer alloc failed\n");
-        abort();
+    for (int i = 0; i < 2; ++i) {
+        s_fb[i] = (uint16_t*)heap_caps_malloc(
+            fbSize,
+            MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL
+        );
+        if (!s_fb[i]) s_fb[i] = (uint16_t*)malloc(fbSize);
+        if (!s_fb[i]) {
+            EMU_LOG("[GBC] FATAL: framebuffer alloc failed\n");
+            abort();
+        }
+        memset(s_fb[i], 0, fbSize);
     }
-    memset(s_gbFramebuf, 0, fbSize);
+    s_gbFramebuf = s_fb[0];
 
     // buffer audio GNUBOY
     s_audioBuf = (int16_t*)heap_caps_malloc(
@@ -97,6 +105,7 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
     if (ret < 0) return;
 
     gnuboy_reset(true);
+    gb_lcd_rebuild_palette();
     gnuboy_set_pad(0);
     gbc_save_init(romPathOrName);
     gbc_save_load();  // SPI-safe; GbcDisp not started yet
@@ -142,9 +151,9 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
             continue;
         }
 
-        // 1/2 frame skip
-        bool doDraw = drawFrame && ((frameCount & 1) == 0);
-        gnuboy_run(doDraw);   // trigger callbacks video/audio
+        // Always emulate. drawFrame only skips the LCD callback, and only
+        // after the loop has fallen more than one frame behind.
+        gnuboy_run(drawFrame);
 
         gbc_cheats_apply();
 
@@ -174,17 +183,15 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
         int64_t now = (int64_t)esp_timer_get_time();
         int64_t lateness = now - (int64_t)next_frame_us;
 
-        if (lateness > 0) {
-            // We are late, skip drawing the next frame
+        if (lateness > (int64_t)frame_us) {
+            // More than one frame late: skip the next LCD push only.
             drawFrame = false;
-
-            // realign the timeline to avoid infinite accumulation
-            if (lateness > (int64_t)frame_us) {
+            if (lateness > (int64_t)frame_us * 4) {
                 next_frame_us = (uint64_t)now;
             }
-
-            continue;
-
+        } else if (lateness > 0) {
+            // Behind, but under one frame: keep drawing, do not sleep.
+            drawFrame = true;
         } else {
             drawFrame = true;
             share::sleep_until_us(next_frame_us);

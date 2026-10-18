@@ -8,6 +8,22 @@
 #include "cpu.h"
 #include "tables.h"
 
+/* Same bytes as gbc_display.cpp's warm filter. Applied to the 64-entry
+ * RGB565 palette, not to every scaled pixel. */
+extern int gbc_display_night_mode(void);
+
+static inline uint16_t gbc_warm_rgb565(uint16_t c)
+{
+	uint16_t r = (c >> 11) & 0x1F;
+	uint16_t g = (c >> 5)  & 0x3F;
+	uint16_t b =  c        & 0x1F;
+	uint16_t r2 = r + (r >> 3);
+	if (r2 > 31) r2 = 31;
+	uint16_t g2 = (uint16_t)((g * 55) / 64);
+	uint16_t b2 = (uint16_t)((b * 40) / 64);
+	return (uint16_t)((r2 << 11) | (g2 << 5) | b2);
+}
+
 typedef struct
 {
 	short v, x, pat, pal, pri;
@@ -589,6 +605,8 @@ static inline void sync_palette(void)
 		int b = (c >> 10) & 0x1f; // bit 10-14 blue
 
 		int out = (r << 11) | (g << 6) | (b);
+		if (gbc_display_night_mode())
+			out = gbc_warm_rgb565((uint16_t)out);
 
 		if (host.video.format == GB_PIXEL_565_BE)
 			host.video.palette[i] = (out << 8) | (out >> 8);
@@ -597,6 +615,14 @@ static inline void sync_palette(void)
 	}
 
 	pal_dirty = false;
+}
+
+void gb_lcd_rebuild_palette(void)
+{
+	if (host.video.palette)
+		sync_palette();
+	else
+		pal_dirty = true;
 }
 
 
