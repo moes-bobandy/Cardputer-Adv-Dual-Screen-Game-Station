@@ -36,6 +36,10 @@ extern volatile int gbc_fps_overlay;
 extern volatile int gbc_fps_value;
 void gbc_fps_toggle(void);
 
+/* Framebuffer the blit is reading, or null between pushes.
+ * The vblank snapshot writer uses this so it does not overwrite a live blit. */
+const uint16_t* gbc_display_reading(void);
+
 #ifdef __cplusplus
 }
 #endif

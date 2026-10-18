@@ -29,6 +29,7 @@ typedef struct {
 static QueueHandle_t s_frameQ  = nullptr;
 static TaskHandle_t  s_task    = nullptr;
 static volatile bool s_displayBusBusy = false;
+static const uint16_t* volatile s_reading = nullptr;
 static uint16_t     *s_lineBuf = nullptr;
 static int           s_lineCap = 0;
 
@@ -108,6 +109,7 @@ static const uint8_t kFpsGlyph[10][5] = {
 
 static const uint8_t kGlyphF[5] = {0x7,0x4,0x6,0x4,0x4};
 static const uint8_t kGlyphU[5] = {0x5,0x5,0x5,0x5,0x7};
+static const uint8_t kGlyphR[5] = {0x7,0x5,0x7,0x5,0x5};
 
 static int paint_bits(uint16_t* line, int dstW, int x0, uint8_t bits)
 {
@@ -127,9 +129,13 @@ static void stamp_fps(uint16_t* line, int dstW, int y)
   int u = gbc_audio_underrun_count();
   if (u < 0) u = 0;
   if (u > 999) u = 999;
+  int r = gbc_audio_ring_min_pct();
+  if (r < 0) r = 0;
+  if (r > 100) r = 100;
   int nf = (v >= 100) ? 3 : (v >= 10) ? 2 : 1;
   int nu = (u >= 100) ? 3 : (u >= 10) ? 2 : 1;
-  int boxW = 4 * (1 + nf + 1 + 1 + nu) + 1;
+  int nr = (r >= 100) ? 3 : (r >= 10) ? 2 : 1;
+  int boxW = 4 * (1 + nf + 1 + 1 + nu + 1 + 1 + nr) + 1;
   if (boxW > dstW) boxW = dstW;
   for (int x = 0; x < boxW; ++x) line[x] = 0x0000;
   if (y < 1 || y > 5) return;
@@ -142,6 +148,10 @@ static void stamp_fps(uint16_t* line, int dstW, int y)
   x0 = paint_bits(line, dstW, x0, kGlyphU[gy]);
   int ud[3] = { u / 100, (u / 10) % 10, u % 10 };
   for (int d = 3 - nu; d < 3; ++d) x0 = paint_bits(line, dstW, x0, kFpsGlyph[ud[d]][gy]);
+  x0 += 4;
+  x0 = paint_bits(line, dstW, x0, kGlyphR[gy]);
+  int rd[3] = { r / 100, (r / 10) % 10, r % 10 };
+  for (int d = 3 - nr; d < 3; ++d) x0 = paint_bits(line, dstW, x0, kFpsGlyph[rd[d]][gy]);
 }
 
 static inline int clampi(int v, int lo, int hi)
@@ -358,6 +368,9 @@ static void gbc_display_task(void *arg)
       continue;
     }
 
+    /* Held for the whole push, including writePixels waits that let the
+     * emulator run the next frame on this core. */
+    s_reading = msg.fb;
     s_displayBusBusy = true;
     externalDisplay.startWrite();
 
@@ -384,6 +397,7 @@ static void gbc_display_task(void *arg)
     }
 
     externalDisplay.endWrite();
+    s_reading = nullptr;
     s_displayBusBusy = false;
     taskYIELD(); // OK after releasing the bus
   }
@@ -446,6 +460,11 @@ extern "C" void gbc_display_stop(void)
   }
 }
 
+
+extern "C" const uint16_t* gbc_display_reading(void)
+{
+  return s_reading;
+}
 
 extern "C" int gbc_display_bus_busy(void)
 {

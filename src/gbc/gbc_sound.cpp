@@ -18,11 +18,11 @@ int    gbc_sampleRate = 44100;
 static TaskHandle_t s_audioTask  = nullptr;
 static volatile bool s_running   = false;
 
-/* ~5.5 frames at 44100 Hz / 60. Emulator feeds, speaker task drains. */
-static constexpr int kRingSamples = 4096;
+/* ~11 frames at 44100 Hz / 60. Emulator feeds, speaker task drains. */
+static constexpr int kRingSamples = 8192;
 static constexpr int kChunk       = 1024;
 static constexpr int kSlots       = 3;
-static constexpr int kPrefill     = 1500;
+static constexpr int kPrefill     = 3000;
 static int16_t* s_ring            = nullptr;
 static int      s_ringSize        = 0;
 static int      s_ringRead        = 0;
@@ -36,28 +36,59 @@ static int      s_fill            = 0;
 static int16_t  s_lastSample      = 0;
 static bool     s_primed          = false;
 static bool     s_inGap           = false;
+static int      s_gapSamples      = 0;
 static volatile int s_underruns   = 0;
+static volatile int s_fillMinPct  = 100;
+static volatile int s_fillMaxPct  = 0;
+static volatile int s_fillShown   = 100;
+static uint32_t s_playRate        = 44100;
 
 // protection ring
 static portMUX_TYPE s_ringMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ================== TASK AUDIO ==================
 
+static void note_fill(int fill)
+{
+    int pct = 0;
+    if (s_ringSize > 0) {
+        if (fill < 0) fill = 0;
+        if (fill > s_ringSize) fill = s_ringSize;
+        pct = (fill * 100) / s_ringSize;
+    }
+    if (pct < s_fillMinPct) s_fillMinPct = pct;
+    if (pct > s_fillMaxPct) s_fillMaxPct = pct;
+}
+
+/* Proportional trim around the prefill level, slewed a few hertz per chunk.
+ * A ±0.5% step at the old 25/75 thresholds is an audible pitch jump; the
+ * speaker applies sample_rate as a per-chunk resample ratio. */
 static uint32_t paced_rate(int fill)
 {
     const int nom = (gbc_sampleRate > 0) ? gbc_sampleRate : 44100;
     if (s_ringSize <= 0) return (uint32_t)nom;
-    if (fill * 4 >= s_ringSize * 3) return (uint32_t)((nom * 1005) / 1000);
-    if (fill * 4 <= s_ringSize)     return (uint32_t)((nom * 995) / 1000);
-    return (uint32_t)nom;
+    int err = fill - kPrefill;
+    int goal = nom + (int)((int64_t)err * nom / (s_ringSize * 250));
+    const int lo = nom - (nom / 250);
+    const int hi = nom + (nom / 250);
+    if (goal < lo) goal = lo;
+    if (goal > hi) goal = hi;
+    int cur = (int)s_playRate;
+    if (cur < 8000 || cur > 96000) cur = nom;
+    if (goal > cur + 4) goal = cur + 4;
+    else if (goal < cur - 4) goal = cur - 4;
+    s_playRate = (uint32_t)goal;
+    return s_playRate;
 }
 
-static void fade_last(int16_t* dst, int n)
+/* Hold the last sample so a short gap stays continuous with the next real
+ * sample. Ease off only after ~80 ms so a dead stream does not sit on DC. */
+static void hold_last(int16_t* dst, int n)
 {
     int32_t s = s_lastSample;
     for (int i = 0; i < n; ++i) {
         dst[i] = (int16_t)s;
-        s = (s * 7) / 8;
+        if (++s_gapSamples > 3500) s = (s * 15) / 16;
     }
     s_lastSample = (int16_t)s;
 }
@@ -73,6 +104,7 @@ static void gbc_audio_task(void* arg)
         }
 
         int fill = s_ringCount;
+        note_fill(fill);
         if (!s_primed) {
             if (fill < kPrefill) {
                 vTaskDelay(pdMS_TO_TICKS(1));
@@ -102,7 +134,9 @@ static void gbc_audio_task(void* arg)
             }
             s_ringCount -= toRead;
             s_lastSample = dst[toRead - 1];
+            fill = s_ringCount;
         }
+        note_fill(fill);
         portEXIT_CRITICAL(&s_ringMux);
 
         uint32_t rate = paced_rate(fill);
@@ -111,10 +145,11 @@ static void gbc_audio_task(void* arg)
                 s_underruns++;
                 s_inGap = true;
             }
-            fade_last(dst, 256);
+            hold_last(dst, 256);
             toRead = 256;
         } else {
             s_inGap = false;
+            s_gapSamples = 0;
         }
 
         M5Cardputer.Speaker.playRaw(
@@ -176,7 +211,12 @@ extern "C" void gbc_sound_init(int sample_rate)
     s_lastSample = 0;
     s_primed = false;
     s_inGap = false;
+    s_gapSamples = 0;
     s_underruns = 0;
+    s_fillMinPct = 100;
+    s_fillMaxPct = 0;
+    s_fillShown = 100;
+    s_playRate = (uint32_t)((gbc_sampleRate > 0) ? gbc_sampleRate : 44100);
 
     s_running = true;
 
@@ -233,6 +273,7 @@ extern "C" void gbc_sound_shutdown(void)
     s_fill = 0;
     s_primed = false;
     s_inGap = false;
+    s_gapSamples = 0;
     s_ringSize  = 0;
     s_ringRead  = 0;
     s_ringWrite = 0;
@@ -272,6 +313,7 @@ extern "C" void gbc_sound_submit(const int16_t* samples, size_t sample_count)
         if (s_ringWrite >= s_ringSize) s_ringWrite = 0;
     }
     s_ringCount += toWrite;
+    note_fill(s_ringCount);
 
     portEXIT_CRITICAL(&s_ringMux);
 
@@ -281,4 +323,20 @@ extern "C" void gbc_sound_submit(const int16_t* samples, size_t sample_count)
 extern "C" int gbc_audio_underrun_count(void)
 {
     return s_underruns;
+}
+
+extern "C" int gbc_audio_ring_min_pct(void)
+{
+    return s_fillShown;
+}
+
+extern "C" void gbc_audio_fill_take(int* min_pct, int* max_pct)
+{
+    int mn = s_fillMinPct;
+    int mx = s_fillMaxPct;
+    s_fillMinPct = 100;
+    s_fillMaxPct = 0;
+    s_fillShown = mn;
+    if (min_pct) *min_pct = mn;
+    if (max_pct) *max_pct = mx;
 }
