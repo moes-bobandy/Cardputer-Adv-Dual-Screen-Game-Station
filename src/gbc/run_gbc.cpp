@@ -135,6 +135,8 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
 
         // Cheat menu pauses emu (no gnuboy_run while open)
         if (gbc_cheats_menu_requested()) {
+            /* Persist any pending in-game SRAM before a long pause. */
+            gbc_save_force_flush();
             gbc_cheats_run_menu();
             next_frame_us = esp_timer_get_time();
             continue;
@@ -158,6 +160,10 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
         uint32_t nowMs = millis();
         if (nowMs - lastFpsMs >= 1000) {
             float fps = (frameCount * 1000.0f) / (nowMs - lastFpsMs);
+            int shown = (int)(fps + 0.5f);
+            if (shown < 0) shown = 0;
+            if (shown > 999) shown = 999;
+            gbc_fps_value = shown;
             EMU_LOG("[GBC] FPS: %.2f | HEAP %u\n", fps, esp_get_free_heap_size());
             frameCount = 0;
             lastFpsMs  = nowMs;

@@ -19,11 +19,18 @@ static TaskHandle_t s_audioTask  = nullptr;
 static volatile bool s_running   = false;
 
 static constexpr int kRingSamples = 2048;
+static constexpr int kChunk       = 512;
+static constexpr int kSlots       = 3;
 static int16_t* s_ring            = nullptr;
 static int      s_ringSize        = 0;
 static int      s_ringRead        = 0;
 static int      s_ringWrite       = 0;
 static int      s_ringCount       = 0;
+// playRaw keeps the pointer. Three slots, and we only fill one when
+// isPlaying() < 2, so the buffer handed to the speaker is never reused
+// while that slot is still queued.
+static int16_t* s_slot[kSlots]    = {};
+static int      s_fill            = 0;
 
 // protection ring
 static portMUX_TYPE s_ringMux = portMUX_INITIALIZER_UNLOCKED;
@@ -32,23 +39,29 @@ static portMUX_TYPE s_ringMux = portMUX_INITIALIZER_UNLOCKED;
 
 static void gbc_audio_task(void* arg)
 {
-    static const int kChunk = 512;
-    int16_t local[kChunk];
+    (void)arg;
 
     while (s_running) {
-        if (s_ringCount == 0) {
+        if (s_ringCount == 0 || !s_slot[0]) {
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
 
-        // Lit un chunk
+        // 0 idle, 1 one slot free, 2 both speaker slots still holding a pointer.
+        int queued = M5Cardputer.Speaker.isPlaying(kChannel);
+        if (queued >= 2) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
+        int16_t* dst = s_slot[s_fill];
         int toRead = 0;
         portENTER_CRITICAL(&s_ringMux);
         if (s_ringCount > 0) {
             toRead = (s_ringCount < kChunk) ? s_ringCount : kChunk;
 
             for (int i = 0; i < toRead; ++i) {
-                local[i] = s_ring[s_ringRead];
+                dst[i] = s_ring[s_ringRead];
                 s_ringRead++;
                 if (s_ringRead >= s_ringSize) s_ringRead = 0;
             }
@@ -62,56 +75,14 @@ static void gbc_audio_task(void* arg)
             continue;
         }
 
-        int queued = M5Cardputer.Speaker.isPlaying(kChannel);
-
-        if (queued == 0) {
-            // Primer chunk
-
-            // Envoi premier
-            M5Cardputer.Speaker.playRaw(
-                local,
-                (size_t)toRead,
-                (uint32_t)gbc_sampleRate,
-                false, 1, kChannel, false
-            );
-
-            // Envoi deuxieme
-            int16_t local2[kChunk];
-            int toRead2 = 0;
-
-            portENTER_CRITICAL(&s_ringMux);
-            if (s_ringCount > 0) {
-                toRead2 = (s_ringCount < kChunk) ? s_ringCount : kChunk;
-                for (int i = 0; i < toRead2; ++i) {
-                    local2[i] = s_ring[s_ringRead];
-                    s_ringRead++;
-                    if (s_ringRead >= s_ringSize) s_ringRead = 0;
-                }
-                s_ringCount -= toRead2;
-            }
-            portEXIT_CRITICAL(&s_ringMux);
-
-            if (toRead2 > 0) {
-                M5Cardputer.Speaker.playRaw(
-                    local2,
-                    (size_t)toRead2,
-                    (uint32_t)gbc_sampleRate,
-                    false, 1, kChannel, false
-                );
-            }
-        }
-        else if (queued == 1) {
-            // un seul chunk
-            M5Cardputer.Speaker.playRaw(
-                local,
-                (size_t)toRead,
-                (uint32_t)gbc_sampleRate,
-                false, 1, kChannel, false
-            );
-        }
-        else {
-            // queued >= 2
-        }
+        M5Cardputer.Speaker.playRaw(
+            dst,
+            (size_t)toRead,
+            (uint32_t)gbc_sampleRate,
+            false, 1, kChannel, false
+        );
+        s_fill++;
+        if (s_fill >= kSlots) s_fill = 0;
     }
 
     vTaskDelete(nullptr);
@@ -152,10 +123,18 @@ extern "C" void gbc_sound_init(int sample_rate)
         s_ringWrite = 0;
         s_ringCount = 0;
     }
+    bool slotsOk = (s_ring != nullptr);
+    for (int i = 0; i < kSlots; ++i) {
+        if (!s_slot[i]) {
+            s_slot[i] = (int16_t*)malloc(kChunk * sizeof(int16_t));
+        }
+        if (!s_slot[i]) slotsOk = false;
+    }
+    s_fill = 0;
 
     s_running = true;
 
-    if (!s_audioTask && s_ring) {
+    if (!s_audioTask && slotsOk) {
         BaseType_t ok = xTaskCreatePinnedToCore(
             gbc_audio_task,
             "gbc_audio",
@@ -172,7 +151,7 @@ extern "C" void gbc_sound_init(int sample_rate)
         }
     }
 
-    s_inited = (s_ring != nullptr);
+    s_inited = slotsOk && (s_audioTask != nullptr);
     EMU_LOG("[GBC][AUDIO] init: rate=%d mono, ring=%d\n",
            gbc_sampleRate, s_ringSize);
 }
@@ -199,6 +178,13 @@ extern "C" void gbc_sound_shutdown(void)
         free(s_ring);
         s_ring = nullptr;
     }
+    for (int i = 0; i < kSlots; ++i) {
+        if (s_slot[i]) {
+            free(s_slot[i]);
+            s_slot[i] = nullptr;
+        }
+    }
+    s_fill = 0;
     s_ringSize  = 0;
     s_ringRead  = 0;
     s_ringWrite = 0;

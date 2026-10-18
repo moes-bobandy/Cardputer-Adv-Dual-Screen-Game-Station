@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "share/input.h"
 #include "gbc_cheats.h"
+#include "gbc_display.h"
 
 extern "C" {
   #include "gnuboy/gnuboy.h"
@@ -97,6 +98,42 @@ extern "C" int gbc_input_poll(void)
             return dummy_ret;
         }
         wasDown = cDown;
+    }
+
+    // ================== NIGHT MODE (orange warm filter) ==================
+    // Own rising-edge: Keyboard.isChange() is already consumed by screen toggle
+    // above in the same poll (same pitfall as cheat hotkey 'c').
+    {
+        static bool wasNightDown = false;
+        bool nDown = M5Cardputer.Keyboard.isKeyPressed(CARDPUTER_NIGHT_TOGGLE) ||
+                     M5Cardputer.Keyboard.isKeyPressed('N');
+        if (!nDown) {
+            for (char ch : ks.word) {
+                if (ch == CARDPUTER_NIGHT_TOGGLE || ch == 'N') { nDown = true; break; }
+            }
+        }
+        if (nDown && !wasNightDown) {
+            gbc_display_toggle_night_mode();
+            EMU_LOG("[GBC] Night mode -> %s\n",
+                    gbc_display_night_mode() ? "ON" : "OFF");
+            wasNightDown = true;
+            return dummy_ret;
+        }
+        wasNightDown = nDown;
+    }
+
+    // FPS overlay. `f` is free in the v15 map. Default on for this test build.
+    {
+        static bool wasFpsDown = false;
+        bool fDown = M5Cardputer.Keyboard.isKeyPressed('f') ||
+                     M5Cardputer.Keyboard.isKeyPressed('F');
+        if (fDown && !wasFpsDown) {
+            gbc_fps_toggle();
+            EMU_LOG("[GBC] FPS overlay -> %s\n", gbc_fps_overlay ? "ON" : "OFF");
+            wasFpsDown = true;
+            return dummy_ret;
+        }
+        wasFpsDown = fDown;
     }
 
     // ================== DIRECTIONS ==================
