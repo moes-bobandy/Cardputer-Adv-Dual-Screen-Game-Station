@@ -471,11 +471,13 @@ void gbc_cheats_run_menu(void) {
   }
 
   VerticalSelector selector(display, input);
+  int selIndex = 0;  // preserve highlight across toggle/redraw
   while (true) {
     std::vector<std::string> options;
     build_options(options);
-    int choice = selector.select("Cheats", options, true, false, {}, {}, false, false);
+    int choice = selector.select("Cheats", options, true, false, {}, {}, false, false, selIndex);
     if (choice < 0) break; // ESC / left = back
+    selIndex = choice;  // stay on same row after enable/disable/reload
 
     const int idxEnableAll  = 0;
     const int idxDisableAll = 1;
