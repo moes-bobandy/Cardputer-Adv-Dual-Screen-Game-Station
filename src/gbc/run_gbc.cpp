@@ -13,15 +13,20 @@ extern "C" {
 #include "share/emu_log_cpp.h"
 
 static uint16_t* s_gbFramebuf = nullptr;
+static uint16_t* s_fb[2] = {nullptr, nullptr};
+static int s_fbIdx = 0;
 static int16_t* s_audioBuf = nullptr;
 extern int gbc_sampleRate;
 
 // callback video GNUBOY
 static void gbc_video_callback(void *buffer)
 {
-    // buffer == s_gbFramebuf
     (void)buffer;
-    gbc_display_submit_frame(s_gbFramebuf, GB_WIDTH, GB_WIDTH, GB_HEIGHT);
+    gbc_display_submit_frame(s_fb[s_fbIdx], GB_WIDTH, GB_WIDTH, GB_HEIGHT);
+    // The other buffer is what the next frame's scanlines write, so the
+    // display task can DMA this one while emulation continues.
+    s_fbIdx ^= 1;
+    gnuboy_set_framebuffer(s_fb[s_fbIdx]);
 }
 
 // callback audio GNUBOY
@@ -33,17 +38,24 @@ void gbc_audio_callback(void *buffer, size_t length)
 }
 
 void gbc_allocate_buffers() {
-    // framebuffer GNUBOY
+    // Two framebuffers so the display can scan one while the next frame is drawn.
     size_t fbSize = GB_WIDTH * GB_HEIGHT * sizeof(uint16_t);
-    s_gbFramebuf = (uint16_t*)heap_caps_malloc(
-        fbSize,
-        MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL
-    );
-    if (!s_gbFramebuf) {
-        EMU_LOG("[GBC] FATAL: framebuffer alloc failed\n");
-        abort();
+    for (int i = 0; i < 2; ++i) {
+        s_fb[i] = (uint16_t*)heap_caps_malloc(
+            fbSize,
+            MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL
+        );
+        if (!s_fb[i]) {
+            s_fb[i] = (uint16_t*)malloc(fbSize);
+        }
+        if (!s_fb[i]) {
+            EMU_LOG("[GBC] FATAL: framebuffer alloc failed\n");
+            abort();
+        }
+        memset(s_fb[i], 0, fbSize);
     }
-    memset(s_gbFramebuf, 0, fbSize);
+    s_fbIdx = 0;
+    s_gbFramebuf = s_fb[0];
 
     // buffer audio GNUBOY
     s_audioBuf = (int16_t*)heap_caps_malloc(
