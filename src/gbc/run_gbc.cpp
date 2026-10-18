@@ -142,9 +142,9 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
             continue;
         }
 
-        // 1/2 frame skip
-        bool doDraw = drawFrame && ((frameCount & 1) == 0);
-        gnuboy_run(doDraw);   // trigger callbacks video/audio
+        // Always emulate. drawFrame only skips the LCD callback, and only
+        // after the loop has fallen more than one frame behind.
+        gnuboy_run(drawFrame);
 
         gbc_cheats_apply();
 
@@ -174,17 +174,15 @@ void run_gbc(const uint8_t* romData, size_t romLen, const char* romPathOrName) {
         int64_t now = (int64_t)esp_timer_get_time();
         int64_t lateness = now - (int64_t)next_frame_us;
 
-        if (lateness > 0) {
-            // We are late, skip drawing the next frame
+        if (lateness > (int64_t)frame_us) {
+            // More than one frame late: skip the next LCD push only.
             drawFrame = false;
-
-            // realign the timeline to avoid infinite accumulation
-            if (lateness > (int64_t)frame_us) {
+            if (lateness > (int64_t)frame_us * 4) {
                 next_frame_us = (uint64_t)now;
             }
-
-            continue;
-
+        } else if (lateness > 0) {
+            // Behind, but under one frame: keep drawing, do not sleep.
+            drawFrame = true;
         } else {
             drawFrame = true;
             share::sleep_until_us(next_frame_us);
